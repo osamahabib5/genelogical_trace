@@ -15,13 +15,13 @@ class Settings(BaseSettings):
 
     # Ollama settings
     ollama_base_url: str = "http://ollama:11434"
-    ollama_chat_model: str = "llama3.1"
+    ollama_chat_model: str = "llama3.2"
     ollama_embed_model: str = "nomic-embed-text"
 
     # Shared LLM settings
     embedding_dimension: int = 768  # nomic-embed-text uses 768
     temperature: float = 0.1
-    max_tokens: int = 1000
+    max_tokens: int = 500
 
     class Config:
         env_file = ".env"
