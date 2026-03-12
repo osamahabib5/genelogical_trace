@@ -25,7 +25,6 @@ class LLMService:
             system_prompt = self._get_default_system_prompt()
 
         context_str = self._build_context_string(context)
-
         user_message = f"Context:\n{context_str}\n\nQuestion: {query}"
 
         try:
@@ -52,7 +51,7 @@ class LLMService:
                     "num_predict": settings.max_tokens
                 }
             },
-            timeout=300  # Ollama can be slow on first response
+            timeout=300
         )
         response.raise_for_status()
         return response.json()["message"]["content"]
@@ -73,19 +72,18 @@ class LLMService:
 
     @staticmethod
     def _get_default_system_prompt() -> str:
-        return """You are an expert genealogist and historian specializing in African American ancestry research.
-Your role is to help users trace and understand genealogical connections based on historical documents and records.
+        return """You are an expert genealogist specializing in African American ancestry research.
 
-When answering queries:
-1. Use the provided context from documents and records to answer accurately
-2. Identify family relationships (parents, siblings, spouses, children)
-3. Extract and highlight important biographical information (birth/death dates, locations, occupations)
-4. Provide clear explanations of genealogical connections
-5. Acknowledge any gaps in the records or uncertain information
-6. Suggest possible connections or areas for further research
+CRITICAL INSTRUCTIONS:
+1. You MUST answer based ONLY on the context provided. The context contains real excerpts from historical documents.
+2. If the context mentions a person, family, or event — use that information to answer directly and specifically.
+3. Do NOT say you cannot find information if it appears anywhere in the context.
+4. Do NOT suggest external research resources if the answer is in the context.
+5. Quote directly from the context when relevant to support your answer.
+6. Only say information is unavailable if it is genuinely absent from ALL provided context chunks.
+7. Be specific — include names, dates, locations, and family relationships mentioned in the context.
 
-Be respectful and sensitive when discussing historical records, particularly those related to slavery or discrimination.
-Always cite which document or record the information comes from when possible."""
+Answer directly and specifically using the context. Start your answer immediately without preamble."""
 
     @staticmethod
     def _build_context_string(context: List[Dict]) -> str:
@@ -93,17 +91,19 @@ Always cite which document or record the information comes from when possible.""
             return "No relevant context found."
 
         context_parts = []
-        for item in context:
+        for i, item in enumerate(context):
             if isinstance(item, dict):
                 if 'text' in item:
                     context_parts.append(
-                        f"From {item.get('document_title', 'Unknown')} "
-                        f"({item.get('document_type', 'unknown')} - "
-                        f"Relevance: {item.get('similarity_score', 0):.2%}):\n"
-                        f"{item['text'][:500]}...\n"
+                        f"[Document {i+1}: {item.get('document_title', 'Unknown')} "
+                        f"- Relevance: {item.get('similarity_score', 0):.2%}]\n"
+                        f"{item['text']}\n"
                     )
                 elif 'person_name' in item:
-                    parts = [f"Name: {item.get('person_name', 'Unknown')}"]
+                    parts = [
+                        f"[Ancestry Record {i+1}]",
+                        f"Name: {item.get('person_name', 'Unknown')}"
+                    ]
                     if item.get('birth_date'):
                         parts.append(f"Birth: {item['birth_date']}")
                     if item.get('birth_location'):
@@ -114,7 +114,7 @@ Always cite which document or record the information comes from when possible.""
                         parts.append(f"Relation: {item['relation_type']}")
                     context_parts.append(" | ".join(parts))
 
-        return "\n".join(context_parts) if context_parts else "No relevant context found."
+        return "\n---\n".join(context_parts) if context_parts else "No relevant context found."
 
 
 llm_service = LLMService()
