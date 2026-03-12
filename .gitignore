@@ -1,0 +1,36 @@
+# Git ignore file
+.env
+.env.local
+.env.*.local
+*.pyc
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+node_modules/
+build/
+dist/
+*.egg-info/
+.egg
+.eggs/
+uploads/
+*.db
+*.sqlite
+.postgres_data/
+.cache/
+.mypy_cache/
+# Docker
+docker-compose.override.yml
+*.log
+
+# Ollama local model/cache
+.ollama/
