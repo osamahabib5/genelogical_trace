@@ -79,11 +79,11 @@ CRITICAL INSTRUCTIONS:
 2. If the context mentions a person, family, or event — use that information to answer directly and specifically.
 3. Do NOT say you cannot find information if it appears anywhere in the context.
 4. Do NOT suggest external research resources if the answer is in the context.
-5. Quote directly from the context when relevant to support your answer.
+5. When the context includes footnote citations, reference them in your answer using [footnote X] notation.
 6. Only say information is unavailable if it is genuinely absent from ALL provided context chunks.
-7. Be specific — include names, dates, locations, and family relationships mentioned in the context.
+7. Be specific — include names, dates, locations, and family relationships from the context.
 
-Answer directly and specifically using the context. Start your answer immediately without preamble."""
+Answer directly and specifically. Start your answer immediately without preamble."""
 
     @staticmethod
     def _build_context_string(context: List[Dict]) -> str:
@@ -92,27 +92,42 @@ Answer directly and specifically using the context. Start your answer immediatel
 
         context_parts = []
         for i, item in enumerate(context):
-            if isinstance(item, dict):
-                if 'text' in item:
-                    context_parts.append(
-                        f"[Document {i+1}: {item.get('document_title', 'Unknown')} "
-                        f"- Relevance: {item.get('similarity_score', 0):.2%}]\n"
-                        f"{item['text']}\n"
-                    )
-                elif 'person_name' in item:
-                    parts = [
-                        f"[Ancestry Record {i+1}]",
-                        f"Name: {item.get('person_name', 'Unknown')}"
-                    ]
-                    if item.get('birth_date'):
-                        parts.append(f"Birth: {item['birth_date']}")
-                    if item.get('birth_location'):
-                        parts.append(f"Location: {item['birth_location']}")
-                    if item.get('occupation'):
-                        parts.append(f"Occupation: {item['occupation']}")
-                    if item.get('relation_type'):
-                        parts.append(f"Relation: {item['relation_type']}")
-                    context_parts.append(" | ".join(parts))
+            if not isinstance(item, dict):
+                continue
+
+            if 'text' in item:
+                # Document chunk
+                header = (
+                    f"[Document {i+1}: {item.get('document_title', 'Unknown')} "
+                    f"- Relevance: {item.get('similarity_score', 0):.2%}]"
+                )
+                body = item['text']
+
+                # Append footnote citations if present
+                footnotes = item.get('footnotes', [])
+                if footnotes:
+                    fn_lines = "\nFootnote Citations:"
+                    for fn in footnotes:
+                        fn_lines += f"\n  [{fn['number']}] {fn['citation']}"
+                    body += fn_lines
+
+                context_parts.append(f"{header}\n{body}")
+
+            elif 'person_name' in item:
+                # Ancestry record
+                parts = [
+                    f"[Ancestry Record {i+1}]",
+                    f"Name: {item.get('person_name', 'Unknown')}"
+                ]
+                if item.get('birth_date'):
+                    parts.append(f"Birth: {item['birth_date']}")
+                if item.get('birth_location'):
+                    parts.append(f"Location: {item['birth_location']}")
+                if item.get('occupation'):
+                    parts.append(f"Occupation: {item['occupation']}")
+                if item.get('relation_type'):
+                    parts.append(f"Relation: {item['relation_type']}")
+                context_parts.append(" | ".join(parts))
 
         return "\n---\n".join(context_parts) if context_parts else "No relevant context found."
 

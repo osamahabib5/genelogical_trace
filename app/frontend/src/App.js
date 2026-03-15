@@ -6,13 +6,11 @@ import Chatbot from './components/Chatbot';
 import DocumentList from './components/DocumentList';
 import FamilyTree from './components/FamilyTree';
 
-// const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 
 function App() {
   const [activeTab, setActiveTab] = useState('chat');
   const [documents, setDocuments] = useState([]);
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     loadDocuments();
@@ -29,46 +27,62 @@ function App() {
 
   const handleDocumentUploaded = () => {
     loadDocuments();
+    // Switch to documents tab after upload so user sees their document
+    setActiveTab('documents');
   };
 
   return (
     <div className="app">
       <header className="app-header">
-        <h1>📚 Genealogy Ancestry Chatbot</h1>
+        <h1>📚 SOFAFEA Genealogy Assistant</h1>
         <p>Trace African American genealogical ancestry through historical documents and records</p>
       </header>
 
       <nav className="app-nav">
-        <button 
+        <button
           className={`nav-button ${activeTab === 'chat' ? 'active' : ''}`}
           onClick={() => setActiveTab('chat')}
         >
           💬 Chat
         </button>
-        {/* <button 
+        <button
           className={`nav-button ${activeTab === 'upload' ? 'active' : ''}`}
           onClick={() => setActiveTab('upload')}
         >
           📤 Upload
         </button>
-        <button 
+        <button
           className={`nav-button ${activeTab === 'documents' ? 'active' : ''}`}
           onClick={() => setActiveTab('documents')}
         >
           📋 Documents
+          {documents.length > 0 && (
+            <span className="doc-count">{documents.length}</span>
+          )}
         </button>
-        <button 
+        <button
           className={`nav-button ${activeTab === 'family' ? 'active' : ''}`}
           onClick={() => setActiveTab('family')}
         >
           👨‍👩‍👧‍👦 Family Tree
-        </button> */}
+        </button>
       </nav>
 
       <main className="app-main">
         {activeTab === 'chat' && <Chatbot apiUrl={API_URL} />}
-        {activeTab === 'upload' && <DocumentUpload apiUrl={API_URL} onDocumentUploaded={handleDocumentUploaded} />}
-        {activeTab === 'documents' && <DocumentList apiUrl={API_URL} documents={documents} />}
+        {activeTab === 'upload' && (
+          <DocumentUpload
+            apiUrl={API_URL}
+            onDocumentUploaded={handleDocumentUploaded}
+          />
+        )}
+        {activeTab === 'documents' && (
+          <DocumentList
+            apiUrl={API_URL}
+            documents={documents}
+            onDocumentsChanged={loadDocuments}
+          />
+        )}
         {activeTab === 'family' && <FamilyTree apiUrl={API_URL} />}
       </main>
     </div>

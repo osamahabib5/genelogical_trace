@@ -6,14 +6,13 @@ import logging
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import DocumentChunk, AncestryData, Document
+from database import DocumentChunk, AncestryData, Document, DocumentFootnote
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class RetrievalService:
-    """Service for semantic search and retrieval"""
 
     @staticmethod
     def search_similar_chunks(
@@ -24,13 +23,13 @@ class RetrievalService:
     ) -> List[Dict]:
         """
         Search for document chunks similar to the given embedding.
-        If keyword is provided, only search within chunks containing that keyword.
+        If keyword provided, filter to chunks containing that keyword first.
+        Enriches results with footnote citations.
         """
         try:
             embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
             if keyword:
-                # Search only within chunks that contain the keyword
                 sql = text("""
                     SELECT
                         dc.id,
@@ -38,6 +37,7 @@ class RetrievalService:
                         d.title,
                         d.document_type,
                         dc.chunk_number,
+                        dc.document_id,
                         1 - (dc.embedding <=> CAST(:embedding AS vector)) AS similarity
                     FROM document_chunks dc
                     JOIN documents d ON dc.document_id = d.id
@@ -52,25 +52,13 @@ class RetrievalService:
                     "top_k": top_k
                 }).fetchall()
 
-                # If keyword search returns results, use them
-                # Otherwise fall back to regular vector search
                 if rows:
                     logger.info(f"Keyword '{keyword}' matched {len(rows)} chunks")
-                    return [
-                        {
-                            "chunk_id": row[0],
-                            "text": row[1],
-                            "document_title": row[2],
-                            "document_type": row[3],
-                            "chunk_number": row[4],
-                            "similarity_score": float(row[5]) if row[5] is not None else 0.0
-                        }
-                        for row in rows
-                    ]
+                    return RetrievalService._enrich_with_footnotes(db, rows)
                 else:
                     logger.info(f"Keyword '{keyword}' matched no chunks, falling back to vector search")
 
-            # Standard vector search (no keyword filter)
+            # Standard vector search
             sql = text("""
                 SELECT
                     dc.id,
@@ -78,6 +66,7 @@ class RetrievalService:
                     d.title,
                     d.document_type,
                     dc.chunk_number,
+                    dc.document_id,
                     1 - (dc.embedding <=> CAST(:embedding AS vector)) AS similarity
                 FROM document_chunks dc
                 JOIN documents d ON dc.document_id = d.id
@@ -92,43 +81,57 @@ class RetrievalService:
             }).fetchall()
 
             logger.info(f"Vector search returned {len(rows)} chunks")
-
-            return [
-                {
-                    "chunk_id": row[0],
-                    "text": row[1],
-                    "document_title": row[2],
-                    "document_type": row[3],
-                    "chunk_number": row[4],
-                    "similarity_score": float(row[5]) if row[5] is not None else 0.0
-                }
-                for row in rows
-            ]
+            return RetrievalService._enrich_with_footnotes(db, rows)
 
         except Exception as e:
             logger.error(f"Error searching similar chunks: {e}")
             return []
 
     @staticmethod
+    def _enrich_with_footnotes(db: Session, rows) -> List[Dict]:
+        """
+        Take raw query rows and enrich each chunk with its linked footnotes.
+        """
+        results = []
+        for row in rows:
+            chunk_id = row[0]
+            chunk_number = row[4]
+
+            # Fetch footnotes linked to this chunk
+            footnotes = db.query(DocumentFootnote).filter(
+                DocumentFootnote.chunk_id == chunk_id
+            ).all()
+
+            footnote_list = [
+                {
+                    "number": fn.footnote_number,
+                    "citation": fn.footnote_text
+                }
+                for fn in footnotes
+            ]
+
+            results.append({
+                "chunk_id": chunk_id,
+                "text": row[1],
+                "document_title": row[2],
+                "document_type": row[3],
+                "chunk_number": chunk_number,
+                "page_number": (chunk_number // 3) + 1,
+                "similarity_score": float(row[6]) if row[6] is not None else 0.0,
+                "footnotes": footnote_list
+            })
+
+        return results
+
+    @staticmethod
     def search_ancestry_data(db: Session, embedding: List[float], top_k: int = 5) -> List[Dict]:
-        """
-        Search for ancestry records similar to the given embedding
-        """
         try:
             embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
             sql = text("""
-                SELECT
-                    id,
-                    person_name,
-                    birth_date,
-                    birth_location,
-                    death_date,
-                    death_location,
-                    occupation,
-                    relation_type,
-                    related_to,
-                    raw_text
+                SELECT id, person_name, birth_date, birth_location,
+                       death_date, death_location, occupation,
+                       relation_type, related_to, raw_text
                 FROM ancestry_data
                 WHERE embedding IS NOT NULL
                 ORDER BY embedding <=> CAST(:embedding AS vector)
@@ -179,7 +182,6 @@ class RetrievalService:
             ).all()
 
             connected = list(person_records)
-
             for record in person_records:
                 if record.related_to:
                     related_records = db.query(AncestryData).filter(
@@ -190,9 +192,9 @@ class RetrievalService:
             seen = set()
             unique_records = []
             for record in connected:
-                record_tuple = (record.id, record.person_name)
-                if record_tuple not in seen:
-                    seen.add(record_tuple)
+                key = (record.id, record.person_name)
+                if key not in seen:
+                    seen.add(key)
                     unique_records.append(record.to_dict())
 
             return unique_records
@@ -206,7 +208,6 @@ class RetrievalService:
             documents = db.query(Document).filter(
                 Document.document_type == doc_type
             ).all()
-
             return [
                 {
                     "id": doc.id,

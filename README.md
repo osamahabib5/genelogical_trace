@@ -7,6 +7,7 @@ An AI-powered Docker chatbot application for tracing African American genealogic
 🔍 **Document Processing**
 - Upload and process PDF, DOCX, TXT, and JSON documents
 - Automatic text extraction and chunking
+- Footnote extraction and linking for DOCX documents
 - Support for journals and application templates
 
 💾 **Vector Database Storage**
@@ -137,6 +138,7 @@ Open your browser and navigate to: **http://localhost:3000**
 
 - **GET** `/api/documents/list` - List all documents
 - **GET** `/api/documents/{document_id}` - Get document details
+- **GET** `/api/documents/{document_id}/footnotes` - Get document footnotes
 - **DELETE** `/api/documents/{document_id}` - Delete a document
 
 ### Queries
@@ -167,6 +169,7 @@ Open your browser and navigate to: **http://localhost:3000**
 1. Go to the "Upload" tab in the web interface
 2. Select document type (Journal or Application)
 3. Choose a PDF, DOCX, TXT, or JSON file
+   - DOCX files will automatically extract and link footnotes to relevant text chunks
 4. Click "Upload Document"
 
 ### 2. Search Genealogical Information
@@ -205,7 +208,7 @@ Open your browser and navigate to: **http://localhost:3000**
 - `document_id`: Reference to document
 - `chunk_text`: Text content (500 chars max)
 - `chunk_number`: Sequence number
-- `embedding`: Vector embedding (1536 dimensions)
+- `embedding`: Vector embedding (768 dimensions)
 
 ### Ancestry Data Table
 - `id`: Record ID
@@ -217,6 +220,14 @@ Open your browser and navigate to: **http://localhost:3000**
 - `relation_type`: Family relationship
 - `related_to`: Related person's name
 - `embedding`: Vector embedding
+
+### Document Footnotes Table
+- `id`: Footnote ID
+- `document_id`: Reference to document
+- `chunk_id`: Reference to chunk (if linked)
+- `footnote_number`: Footnote number (e.g., "120")
+- `footnote_text`: Full footnote content
+- `page_number`: Page number (optional)
 
 ## Troubleshooting
 

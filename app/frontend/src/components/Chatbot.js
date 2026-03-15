@@ -17,7 +17,6 @@ function Chatbot({ apiUrl }) {
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-
     if (!input.trim()) return;
 
     const userMessage = {
@@ -36,7 +35,7 @@ function Chatbot({ apiUrl }) {
       const response = await axios.post(
         `${apiUrl}/queries/ask`,
         { query: input, include_context: true },
-        { timeout: 300000 }  // 5 minutes
+        { timeout: 300000 }
       );
 
       const botMessage = {
@@ -78,23 +77,42 @@ function Chatbot({ apiUrl }) {
                 </div>
               )}
 
-              {/* Sources with page numbers */}
+              {/* Sources with footnote citations */}
               {message.sources && message.sources.length > 0 && (
                 <div className="message-sources">
                   <strong>Sources:</strong>
                   {message.sources.map((source, idx) => (
                     <div key={idx} className="source-item">
+
                       {source.document_title && (
-                        <span className="source-doc">
-                          📄 {source.document_title}
-                          {source.page_number && (
-                            <span className="source-page"> — Page {source.page_number}</span>
+                        <div className="source-doc-block">
+                          <span className="source-doc">
+                            📄 {source.document_title}
+                            {source.similarity_score && (
+                              <span className="source-score">
+                                {' '}({(source.similarity_score * 100).toFixed(1)}% match)
+                              </span>
+                            )}
+                          </span>
+
+                          {/* Show footnote citations if available */}
+                          {source.footnotes && source.footnotes.length > 0 ? (
+                            <div className="source-footnotes">
+                              {source.footnotes.map((fn, fnIdx) => (
+                                <div key={fnIdx} className="footnote-citation">
+                                  <span className="footnote-number">[{fn.number}]</span>
+                                  <span className="footnote-text">{fn.citation}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            source.page_number && (
+                              <span className="source-page"> — Page {source.page_number}</span>
+                            )
                           )}
-                          {source.similarity_score && (
-                            <span className="source-score"> ({(source.similarity_score * 100).toFixed(1)}% match)</span>
-                          )}
-                        </span>
+                        </div>
                       )}
+
                       {source.person_name && (
                         <span className="source-person">👤 {source.person_name}</span>
                       )}

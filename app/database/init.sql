@@ -69,3 +69,14 @@ LEFT JOIN ancestry_data a ON q.id = q.id
 GROUP BY q.query_text, q.query_date
 ORDER BY q.query_date DESC
 LIMIT 50;
+
+CREATE TABLE IF NOT EXISTS document_footnotes (
+    id SERIAL PRIMARY KEY,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    chunk_id INTEGER REFERENCES document_chunks(id) ON DELETE CASCADE,
+    footnote_number VARCHAR(20),
+    footnote_text TEXT,
+    page_number INTEGER
+);
+CREATE INDEX idx_footnotes_document ON document_footnotes(document_id);
+CREATE INDEX idx_footnotes_chunk ON document_footnotes(chunk_id);

@@ -52,6 +52,21 @@ body {
   color: #333;
   transition: all 0.3s ease;
   font-weight: 500;
+  position: relative;
+}
+
+.doc-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  background: #667eea;
+  color: white;
+  border-radius: 99px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  min-width: 18px;
+  text-align: center;
 }
 
 .nav-button:hover {

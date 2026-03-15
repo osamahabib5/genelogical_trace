@@ -8,9 +8,8 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 import uuid
-from datetime import datetime
 
-from database import SessionLocal, Document, DocumentChunk, AncestryData
+from database import SessionLocal, Document, DocumentChunk, AncestryData, DocumentFootnote
 from document_processor import DocumentProcessor
 from embedding_service import embedding_service
 from config import settings
@@ -34,42 +33,52 @@ async def upload_document(
     db: Session = Depends(get_db)
 ):
     """
-    Upload a document (PDF, DOCX, TXT, JSON)
-    Embeddings are generated synchronously to guarantee they exist after upload.
+    Upload a document. For DOCX files, extracts footnotes directly from
+    Word XML so that footnote references are correctly linked to chunks.
     """
     try:
-        # Validate file type
         file_ext = os.path.splitext(file.filename)[1].lower()
         if file_ext not in {'.pdf', '.docx', '.txt', '.json'}:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
 
-        # Create uploads directory if not exists
         os.makedirs(settings.upload_directory, exist_ok=True)
 
-        # Save file with unique name
         unique_filename = f"{uuid.uuid4()}_{file.filename}"
         file_path = os.path.join(settings.upload_directory, unique_filename)
 
-        # Write file
         with open(file_path, "wb") as f:
             content = await file.read()
             f.write(content)
 
-        # Check file size
         if len(content) > settings.max_upload_size:
             os.remove(file_path)
             raise HTTPException(status_code=413, detail="File too large")
 
-        # Process document — extract text and chunks
-        try:
-            full_text, chunks = DocumentProcessor.process_document(file_path)
-        except Exception as e:
-            os.remove(file_path)
-            raise HTTPException(status_code=400, detail=f"Error processing file: {str(e)}")
+        # ── For DOCX: use XML-based extraction that preserves footnote refs ──
+        if file_ext == '.docx':
+            logger.info(f"Extracting footnotes from DOCX: {file.filename}")
+            footnotes = DocumentProcessor.extract_footnotes_from_docx(file_path)
+            logger.info(f"Found {len(footnotes)} footnotes")
 
-        logger.info(f"Extracted {len(chunks)} chunks from {file.filename}")
+            full_text, chunks, chunk_footnote_map = \
+                DocumentProcessor.build_text_and_chunk_footnote_map(file_path, footnotes)
 
-        # Create document record
+            logger.info(
+                f"Extracted {len(chunks)} chunks, "
+                f"footnotes linked to {len(chunk_footnote_map)} chunks"
+            )
+
+        else:
+            # Non-DOCX: standard extraction, no footnotes
+            try:
+                full_text, chunks = DocumentProcessor.process_document(file_path)
+            except Exception as e:
+                os.remove(file_path)
+                raise HTTPException(status_code=400, detail=f"Error processing file: {str(e)}")
+            footnotes = {}
+            chunk_footnote_map = {}
+
+        # ── Create document record ──
         document = Document(
             title=file.filename,
             document_type=document_type.lower(),
@@ -78,21 +87,35 @@ async def upload_document(
             doc_metadata={
                 "original_filename": file.filename,
                 "file_size": len(content),
-                "chunk_count": len(chunks)
+                "chunk_count": len(chunks),
+                "footnote_count": len(footnotes)
             }
         )
         db.add(document)
-        db.flush()  # Get document ID
+        db.flush()
         document_id = document.id
-        logger.info(f"Created document record with ID {document_id}")
+        logger.info(f"Created document record ID={document_id}")
 
-        # ── Generate embeddings and save chunks SYNCHRONOUSLY ──
+        # ── Save all footnotes ──
+        footnote_objects = {}
+        for fn_number, fn_text in footnotes.items():
+            fn_obj = DocumentFootnote(
+                document_id=document_id,
+                footnote_number=fn_number,
+                footnote_text=fn_text,
+                chunk_id=None
+            )
+            db.add(fn_obj)
+            footnote_objects[fn_number] = fn_obj
+
+        db.flush()
+
+        # ── Generate embeddings and save chunks ──
         success_count = 0
         error_count = 0
 
         for idx, chunk_text in enumerate(chunks):
             try:
-                # Generate embedding for this chunk
                 embedding = embedding_service.embed_text(chunk_text)
 
                 doc_chunk = DocumentChunk(
@@ -102,9 +125,18 @@ async def upload_document(
                     embedding=embedding
                 )
                 db.add(doc_chunk)
+                db.flush()
+
+                # Link footnotes to this chunk
+                if idx in chunk_footnote_map:
+                    for fn_ref in chunk_footnote_map[idx]:
+                        fn_num = fn_ref["number"]
+                        if fn_num in footnote_objects:
+                            footnote_objects[fn_num].chunk_id = doc_chunk.id
+                            logger.debug(f"Linked footnote {fn_num} to chunk {idx}")
+
                 success_count += 1
 
-                # Commit every 50 chunks to avoid memory buildup
                 if idx % 50 == 0:
                     db.flush()
                     logger.info(f"Processed {idx}/{len(chunks)} chunks...")
@@ -114,11 +146,10 @@ async def upload_document(
                 error_count += 1
                 continue
 
-        # ── Extract genealogical entities and save ──
+        # ── Extract genealogical entities ──
         try:
             entities = DocumentProcessor.extract_genealogical_entities(full_text)
             full_embedding = embedding_service.embed_text(full_text[:1000])
-
             for person_name in entities.get('names', [])[:10]:
                 ancestry_record = AncestryData(
                     document_id=document_id,
@@ -130,10 +161,13 @@ async def upload_document(
         except Exception as e:
             logger.warning(f"Entity extraction failed (non-critical): {e}")
 
-        # Final commit
         db.commit()
-        logger.info(f"Document {document_id} fully processed. "
-                    f"Chunks: {success_count} success, {error_count} errors.")
+        logger.info(
+            f"Document {document_id} fully processed. "
+            f"Chunks: {success_count} success, {error_count} errors. "
+            f"Footnotes: {len(footnotes)} total, "
+            f"{len(chunk_footnote_map)} chunks with linked footnotes."
+        )
 
         return {
             "success": True,
@@ -143,7 +177,9 @@ async def upload_document(
             "document_type": document_type,
             "chunks": success_count,
             "embedding_errors": error_count,
-            "message": "Document uploaded and embeddings generated successfully"
+            "footnotes_extracted": len(footnotes),
+            "footnotes_linked_to_chunks": len(chunk_footnote_map),
+            "message": "Document uploaded with footnotes correctly linked to chunks"
         }
 
     except HTTPException:
@@ -160,10 +196,8 @@ async def list_documents(
     limit: int = 10,
     db: Session = Depends(get_db)
 ):
-    """List uploaded documents"""
     try:
         query = db.query(Document)
-
         if doc_type:
             query = query.filter(Document.document_type == doc_type.lower())
 
@@ -180,6 +214,7 @@ async def list_documents(
                     "filename": doc.file_name,
                     "upload_date": doc.upload_date.isoformat() if doc.upload_date else None,
                     "chunks": len(doc.chunks),
+                    "footnotes": len(doc.footnotes),
                     "ancestors_found": len(doc.ancestry_data)
                 }
                 for doc in documents
@@ -192,10 +227,8 @@ async def list_documents(
 
 @router.get("/{document_id}")
 async def get_document(document_id: int, db: Session = Depends(get_db)):
-    """Get document details"""
     try:
         document = db.query(Document).filter(Document.id == document_id).first()
-
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
 
@@ -207,6 +240,7 @@ async def get_document(document_id: int, db: Session = Depends(get_db)):
             "upload_date": document.upload_date.isoformat() if document.upload_date else None,
             "content_preview": document.content[:500] if document.content else None,
             "chunks": len(document.chunks),
+            "footnotes": len(document.footnotes),
             "ancestry_records": len(document.ancestry_data),
             "metadata": document.doc_metadata
         }
@@ -217,21 +251,37 @@ async def get_document(document_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{document_id}")
-async def delete_document(document_id: int, db: Session = Depends(get_db)):
-    """Delete a document and its associated data"""
+@router.get("/{document_id}/footnotes")
+async def get_document_footnotes(document_id: int, db: Session = Depends(get_db)):
     try:
         document = db.query(Document).filter(Document.id == document_id).first()
-
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
 
-        # Delete associated file
+        return {
+            "document_id": document_id,
+            "title": document.title,
+            "footnote_count": len(document.footnotes),
+            "footnotes": [fn.to_dict() for fn in document.footnotes]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting footnotes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{document_id}")
+async def delete_document(document_id: int, db: Session = Depends(get_db)):
+    try:
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+
         file_path = os.path.join(settings.upload_directory, document.file_name)
         if os.path.exists(file_path):
             os.remove(file_path)
 
-        # Delete from database (cascades to chunks and ancestry data)
         db.delete(document)
         db.commit()
 

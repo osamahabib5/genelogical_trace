@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import axios from 'axios';
 import './DocumentUpload.css';
 
@@ -6,38 +6,72 @@ function DocumentUpload({ apiUrl, onDocumentUploaded }) {
   const [file, setFile] = useState(null);
   const [docType, setDocType] = useState('journal');
   const [uploading, setUploading] = useState(false);
-  const [message, setMessage] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const VALID_TYPES = ['.pdf', '.docx', '.txt', '.json'];
+  const MAX_SIZE_MB = 100;
+
+  const validateFile = (selectedFile) => {
+    const fileExt = selectedFile.name
+      .substring(selectedFile.name.lastIndexOf('.'))
+      .toLowerCase();
+
+    if (!VALID_TYPES.includes(fileExt)) {
+      return `Invalid file type. Supported: ${VALID_TYPES.join(', ')}`;
+    }
+    if (selectedFile.size > MAX_SIZE_MB * 1024 * 1024) {
+      return `File too large. Maximum size: ${MAX_SIZE_MB}MB`;
+    }
+    return null;
+  };
+
+  const handleFileSelect = (selectedFile) => {
+    if (!selectedFile) return;
+    const validationError = validateFile(selectedFile);
+    if (validationError) {
+      setError(validationError);
+      setFile(null);
+    } else {
+      setFile(selectedFile);
+      setError('');
+      setResult(null);
+    }
+  };
 
   const handleFileChange = (e) => {
-    const selectedFile = e.target.files[0];
-    if (selectedFile) {
-      const validTypes = ['.pdf', '.docx', '.txt', '.json'];
-      const fileExt = selectedFile.name.substring(selectedFile.name.lastIndexOf('.')).toLowerCase();
-      
-      if (!validTypes.includes(fileExt)) {
-        setError(`Invalid file type. Supported: ${validTypes.join(', ')}`);
-        setFile(null);
-      } else if (selectedFile.size > 50 * 1024 * 1024) {
-        setError('File too large. Maximum size: 50MB');
-        setFile(null);
-      } else {
-        setFile(selectedFile);
-        setError('');
-      }
-    }
+    handleFileSelect(e.target.files[0]);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = () => setDragOver(false);
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    handleFileSelect(e.dataTransfer.files[0]);
+  };
+
+  const formatFileSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   const handleUpload = async (e) => {
     e.preventDefault();
-    
-    if (!file) {
-      setError('Please select a file');
-      return;
-    }
+    if (!file) { setError('Please select a file'); return; }
 
     setUploading(true);
-    setMessage('');
+    setProgress(0);
+    setResult(null);
     setError('');
 
     try {
@@ -45,26 +79,32 @@ function DocumentUpload({ apiUrl, onDocumentUploaded }) {
       formData.append('file', file);
       formData.append('document_type', docType);
 
-      const response = await axios.post(`${apiUrl}/documents/upload`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
+      const response = await axios.post(
+        `${apiUrl}/documents/upload`,
+        formData,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 600000, // 10 minutes for large files
+          onUploadProgress: (progressEvent) => {
+            const pct = Math.round(
+              (progressEvent.loaded * 100) / progressEvent.total
+            );
+            setProgress(pct);
+          }
+        }
+      );
 
-      setMessage(`✅ Document uploaded successfully! (ID: ${response.data.document_id})`);
+      setResult(response.data);
       setFile(null);
-      
-      // Reset form
-      document.getElementById('upload-form').reset();
-      
-      // Notify parent component
-      if (onDocumentUploaded) {
-        onDocumentUploaded();
-      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
+
+      if (onDocumentUploaded) onDocumentUploaded();
+
     } catch (err) {
-      setError(`❌ Error uploading document: ${err.response?.data?.detail || err.message}`);
+      setError(`❌ Upload failed: ${err.response?.data?.detail || err.message}`);
     } finally {
       setUploading(false);
+      setProgress(0);
     }
   };
 
@@ -72,61 +112,142 @@ function DocumentUpload({ apiUrl, onDocumentUploaded }) {
     <div className="upload-container">
       <div className="upload-card">
         <h2>📤 Upload Genealogical Document</h2>
-        
-        <form id="upload-form" onSubmit={handleUpload} className="upload-form">
+        <p className="upload-subtitle">
+          Upload journals, applications, or historical records.
+          Footnotes and citations will be automatically extracted.
+        </p>
+
+        <form onSubmit={handleUpload} className="upload-form">
+
+          {/* Document type selector */}
           <div className="form-group">
-            <label htmlFor="doc-type">Document Type:</label>
-            <select 
+            <label htmlFor="doc-type">Document Type</label>
+            <select
               id="doc-type"
-              value={docType} 
+              value={docType}
               onChange={(e) => setDocType(e.target.value)}
               className="form-control"
+              disabled={uploading}
             >
-              <option value="journal">Journal Entry</option>
-              <option value="application">Application</option>
-              <option value="other">Other Document</option>
+              <option value="journal">📔 Journal</option>
+              <option value="application">📝 Member Application</option>
+              <option value="other">📄 Other Document</option>
             </select>
           </div>
 
-          <div className="form-group">
-            <label htmlFor="file-input" className="file-label">
-              <div className="file-input-wrapper">
-                <span className="file-icon">📁</span>
-                <span className="file-text">
-                  {file ? file.name : 'Click to select file (PDF, DOCX, TXT, JSON)'}
+          {/* Drag and drop zone */}
+          <div
+            className={`drop-zone ${dragOver ? 'drag-over' : ''} ${file ? 'has-file' : ''}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              onChange={handleFileChange}
+              accept=".pdf,.docx,.txt,.json"
+              className="hidden-input"
+              disabled={uploading}
+            />
+
+            {file ? (
+              <div className="file-selected">
+                <span className="file-icon-large">
+                  {file.name.endsWith('.docx') ? '📝' :
+                   file.name.endsWith('.pdf')  ? '📕' :
+                   file.name.endsWith('.txt')  ? '📄' : '🔧'}
                 </span>
+                <div className="file-info">
+                  <span className="file-name">{file.name}</span>
+                  <span className="file-size">{formatFileSize(file.size)}</span>
+                </div>
+                <button
+                  type="button"
+                  className="remove-file"
+                  onClick={(e) => { e.stopPropagation(); setFile(null); setResult(null); }}
+                >
+                  ✕
+                </button>
               </div>
-              <input 
-                id="file-input"
-                type="file" 
-                onChange={handleFileChange}
-                accept=".pdf,.docx,.txt,.json"
-                className="hidden-input"
-              />
-            </label>
+            ) : (
+              <div className="drop-zone-content">
+                <span className="drop-icon">📁</span>
+                <p className="drop-text">
+                  <strong>Drag & drop</strong> your file here
+                </p>
+                <p className="drop-subtext">or click to browse</p>
+                <p className="drop-formats">PDF · DOCX · TXT · JSON · Max {MAX_SIZE_MB}MB</p>
+              </div>
+            )}
           </div>
 
-          <button 
-            type="submit" 
+          {/* Progress bar */}
+          {uploading && (
+            <div className="progress-container">
+              <div className="progress-bar">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <p className="progress-text">
+                {progress < 100
+                  ? `Uploading... ${progress}%`
+                  : '⚙️ Processing document, extracting embeddings and footnotes...'}
+              </p>
+            </div>
+          )}
+
+          <button
+            type="submit"
             disabled={!file || uploading}
             className="upload-button"
           >
-            {uploading ? '⏳ Uploading...' : '📤 Upload Document'}
+            {uploading ? '⏳ Processing...' : '📤 Upload Document'}
           </button>
         </form>
 
-        {message && <div className="success-message">{message}</div>}
+        {/* Error message */}
         {error && <div className="error-message">{error}</div>}
 
+        {/* Success result */}
+        {result && (
+          <div className="success-result">
+            <h3>✅ Upload Successful</h3>
+            <div className="result-stats">
+              <div className="stat">
+                <span className="stat-value">{result.chunks}</span>
+                <span className="stat-label">Chunks</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{result.footnotes_extracted || 0}</span>
+                <span className="stat-label">Footnotes</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{result.footnotes_linked_to_chunks || 0}</span>
+                <span className="stat-label">Linked</span>
+              </div>
+              <div className="stat">
+                <span className="stat-value">{result.embedding_errors || 0}</span>
+                <span className="stat-label">Errors</span>
+              </div>
+            </div>
+            <p className="result-title">📄 {result.title}</p>
+            <p className="result-id">Document ID: {result.document_id}</p>
+          </div>
+        )}
+
+        {/* Format info */}
         <div className="upload-info">
-          <h3>Supported Formats:</h3>
-          <ul>
-            <li>📄 PDF - Portable Document Format</li>
-            <li>📝 DOCX - Microsoft Word Document</li>
-            <li>📋 TXT - Plain Text File</li>
-            <li>🔧 JSON - Structured Data</li>
-          </ul>
-          <p><strong>Max file size:</strong> 50MB</p>
+          <h3>Supported Formats</h3>
+          <div className="format-grid">
+            <div className="format-item">📕 <strong>PDF</strong> — Portable Document Format</div>
+            <div className="format-item">📝 <strong>DOCX</strong> — Microsoft Word (footnotes extracted)</div>
+            <div className="format-item">📄 <strong>TXT</strong> — Plain Text</div>
+            <div className="format-item">🔧 <strong>JSON</strong> — Structured Data</div>
+          </div>
         </div>
       </div>
     </div>

@@ -2,59 +2,83 @@
 Database models and session management
 """
 
-# from sqlalchemy import Column, Integer, String, Text, DateTime, JSONB, ForeignKey, create_engine
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
-# from sqlalchemy.orm import relationship, Session
 from sqlalchemy.orm import relationship, Session, sessionmaker
 from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from config import settings
-import uuid
 
 Base = declarative_base()
 
 
 class Document(Base):
     __tablename__ = "documents"
-    
+
     id = Column(Integer, primary_key=True)
     title = Column(String(255), nullable=False)
-    document_type = Column(String(50), nullable=False)  # 'journal' or 'application'
+    document_type = Column(String(50), nullable=False)
     file_name = Column(String(255), nullable=False)
     content = Column(Text)
     upload_date = Column(DateTime, default=datetime.utcnow)
     uploaded_by = Column(String(255))
-    doc_metadata  = Column(JSONB, default={})
-    
+    doc_metadata = Column(JSONB, default={})
+
     # Relationships
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
     ancestry_data = relationship("AncestryData", back_populates="document", cascade="all, delete-orphan")
-    
+    footnotes = relationship("DocumentFootnote", back_populates="document", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<Document(id={self.id}, title='{self.title}', type='{self.document_type}')>"
 
 
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
-    
+
     id = Column(Integer, primary_key=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
     chunk_text = Column(Text, nullable=False)
     chunk_number = Column(Integer)
-    # embedding = Column(Vector(1536))
     embedding = Column(Vector(768))
+
     # Relationships
     document = relationship("Document", back_populates="chunks")
-    
+    footnotes = relationship("DocumentFootnote", back_populates="chunk", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<DocumentChunk(id={self.id}, document_id={self.document_id})>"
 
 
+class DocumentFootnote(Base):
+    __tablename__ = "document_footnotes"
+
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+    chunk_id = Column(Integer, ForeignKey("document_chunks.id"), nullable=True)
+    footnote_number = Column(String(20))   # e.g. "120", "121"
+    footnote_text = Column(Text)           # Full citation text
+    page_number = Column(Integer, nullable=True)
+
+    # Relationships
+    document = relationship("Document", back_populates="footnotes")
+    chunk = relationship("DocumentChunk", back_populates="footnotes")
+
+    def to_dict(self):
+        return {
+            "footnote_number": self.footnote_number,
+            "footnote_text": self.footnote_text,
+            "page_number": self.page_number
+        }
+
+    def __repr__(self):
+        return f"<DocumentFootnote(id={self.id}, number='{self.footnote_number}')>"
+
+
 class AncestryData(Base):
     __tablename__ = "ancestry_data"
-    
+
     id = Column(Integer, primary_key=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
     person_name = Column(String(255))
@@ -66,13 +90,12 @@ class AncestryData(Base):
     relation_type = Column(String(100))
     related_to = Column(String(255))
     raw_text = Column(Text)
-    # embedding = Column(Vector(1536))
     embedding = Column(Vector(768))
     extraction_date = Column(DateTime, default=datetime.utcnow)
-    
+
     # Relationships
     document = relationship("Document", back_populates="ancestry_data")
-    
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -86,23 +109,22 @@ class AncestryData(Base):
             "related_to": self.related_to,
             "raw_text": self.raw_text
         }
-    
+
     def __repr__(self):
         return f"<AncestryData(id={self.id}, person={self.person_name})>"
 
 
 class QueryHistory(Base):
     __tablename__ = "query_history"
-    
+
     id = Column(Integer, primary_key=True)
     query_text = Column(Text, nullable=False)
     results = Column(JSONB)
     query_date = Column(DateTime, default=datetime.utcnow)
     relevance_score = Column(Integer)
-    
+
     def __repr__(self):
         return f"<QueryHistory(id={self.id}, query='{self.query_text[:50]}...')>"
-
 
 
 # Create engine
@@ -110,6 +132,7 @@ engine = create_engine(settings.database_url)
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 def create_tables():
     """Create all tables in the database"""

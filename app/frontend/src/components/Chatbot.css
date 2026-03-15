@@ -26,23 +26,12 @@
 }
 
 @keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.message-user {
-  align-self: flex-end;
-}
-
-.message-bot {
-  align-self: flex-start;
-}
+.message-user { align-self: flex-end; }
+.message-bot  { align-self: flex-start; }
 
 .message-content {
   background: #f0f0f0;
@@ -86,15 +75,57 @@
   padding: 0.35rem 0;
 }
 
+.source-doc-block {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  padding: 0.5rem;
+  margin-top: 4px;
+}
+
 .source-doc {
   display: block;
-  padding: 0.25rem 0.5rem;
-  margin-top: 4px;
-  background: rgba(0, 0, 0, 0.08);
-  border-radius: 3px;
-  font-weight: 500;
+  font-weight: 600;
   font-size: 0.82rem;
   color: #333;
+}
+
+.source-score {
+  color: #888;
+  font-size: 0.75rem;
+  font-weight: normal;
+}
+
+.source-page {
+  color: #555;
+  font-size: 0.8rem;
+  font-weight: normal;
+}
+
+/* ── Footnote citations ── */
+.source-footnotes {
+  margin-top: 6px;
+  border-top: 1px dashed rgba(0,0,0,0.15);
+  padding-top: 6px;
+}
+
+.footnote-citation {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.footnote-number {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: #667eea;
+  min-width: 28px;
+}
+
+.footnote-text {
+  color: #444;
+  font-style: italic;
 }
 
 .source-person {
@@ -108,28 +139,17 @@
   color: #333;
 }
 
-.source-page {
-  color: #555;
-  font-size: 0.8rem;
-  font-weight: normal;
-}
-
-.source-score {
-  color: #888;
-  font-size: 0.75rem;
-  font-weight: normal;
+.message-user .source-doc-block {
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .message-user .source-doc,
 .message-user .source-person {
-  background: rgba(255, 255, 255, 0.2);
   color: white;
 }
 
-.message-user .source-page,
-.message-user .source-score {
-  color: rgba(255, 255, 255, 0.8);
-}
+.message-user .footnote-number { color: #c3cff7; }
+.message-user .footnote-text   { color: rgba(255,255,255,0.85); }
 
 /* ── Timestamps ── */
 .message-time {
@@ -140,7 +160,6 @@
 
 .message-user .message-time {
   align-self: flex-end;
-  color: rgba(255, 255, 255, 0.7);
 }
 
 /* ── Typing indicator ── */
@@ -158,13 +177,8 @@
   animation: typing 1.4s infinite;
 }
 
-.typing-indicator span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.typing-indicator span:nth-child(3) {
-  animation-delay: 0.4s;
-}
+.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
 
 @keyframes typing {
   0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
@@ -240,11 +254,6 @@
 }
 
 @media (max-width: 768px) {
-  .chatbot-container {
-    height: 80vh;
-  }
-
-  .message-content {
-    max-width: 90%;
-  }
+  .chatbot-container { height: 80vh; }
+  .message-content { max-width: 90%; }
 }
