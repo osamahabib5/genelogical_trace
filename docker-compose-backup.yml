@@ -20,6 +20,21 @@ services:
     networks:
       - genealogy-network
 
+  ollama:
+    # image: ollama/ollama
+    image: ollama/ollama:0.5.7
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - genealogy-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   backend:
     env_file:
       - .env
@@ -32,11 +47,16 @@ services:
       DATABASE_URL: postgresql://genealogy_user:genealogy_password@postgres:5432/genealogy_db
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ALLOWED_ORIGINS: http://localhost:3000,http://localhost:8000
+      # --- CHANGE THESE TWO LINES ---
       LLM_PROVIDER: groq
       GROQ_API_KEY: ${GROQ_API_KEY}
+      # LLM_PROVIDER: ollama
+      # OLLAMA_BASE_URL: http://ollama:11434
     depends_on:
       postgres:
         condition: service_healthy
+      # ollama:
+      #   condition: service_started
     volumes:
       - ./uploads:/app/uploads
       - ./app/backend:/app
@@ -59,6 +79,8 @@ services:
 
 volumes:
   postgres_data:
+  ollama_data:
+  
 
 networks:
   genealogy-network:
