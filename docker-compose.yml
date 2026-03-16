@@ -46,7 +46,7 @@ services:
       DATABASE_URL: postgresql://genealogy_user:genealogy_password@postgres:5432/genealogy_db
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ALLOWED_ORIGINS: http://localhost:3000,http://localhost:8000
-      LLM_PROVIDER: groq
+      LLM_PROVIDER: ollama
       GROQ_API_KEY: ${GROQ_API_KEY}
       OLLAMA_BASE_URL: http://ollama:11434
     depends_on:

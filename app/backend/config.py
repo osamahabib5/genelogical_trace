@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     allowed_origins: str = ""
 
     # LLM Provider — "ollama", "openai", or "groq"
-    llm_provider: str = "groq"
+    llm_provider: str = "ollama"
 
     # OpenAI
     openai_api_key: str = ""
