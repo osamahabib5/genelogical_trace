@@ -31,8 +31,8 @@ class DocumentProcessor:
     """Process various document formats and extract text and footnotes"""
 
     SUPPORTED_FORMATS = {'.pdf', '.docx', '.txt', '.json'}
-    CHUNK_SIZE = 500
-    OVERLAP = 50
+    CHUNK_SIZE = 1000
+    OVERLAP = 100
 
     @staticmethod
     def process_document(file_path: str) -> Tuple[str, List[str]]:

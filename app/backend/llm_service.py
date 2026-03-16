@@ -1,5 +1,5 @@
 """
-LLM service - supports Ollama and OpenAI
+LLM service - supports Ollama, OpenAI, and Groq
 """
 
 import logging
@@ -30,11 +30,35 @@ class LLMService:
         try:
             if self.provider == "openai":
                 return self._call_openai(system_prompt, user_message)
+            elif self.provider == "groq":
+                return self._call_groq(system_prompt, user_message)
             else:
                 return self._call_ollama(system_prompt, user_message)
         except Exception as e:
             logger.error(f"Error generating response: {e}")
             return f"Error generating response: {str(e)}"
+
+    def _call_groq(self, system_prompt: str, user_message: str) -> str:
+        """Call Groq API — fast LLaMA inference, free tier available."""
+        try:
+            from groq import Groq
+        except ImportError:
+            raise ImportError(
+                "groq package not installed. Add 'groq==0.9.0' to requirements.txt "
+                "and rebuild with docker-compose up --build"
+            )
+
+        client = Groq(api_key=settings.groq_api_key)
+        response = client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            max_tokens=settings.max_tokens,
+            temperature=settings.temperature
+        )
+        return response.choices[0].message.content
 
     def _call_ollama(self, system_prompt: str, user_message: str) -> str:
         response = requests.post(
@@ -96,14 +120,12 @@ Answer directly and specifically. Start your answer immediately without preamble
                 continue
 
             if 'text' in item:
-                # Document chunk
                 header = (
                     f"[Document {i+1}: {item.get('document_title', 'Unknown')} "
                     f"- Relevance: {item.get('similarity_score', 0):.2%}]"
                 )
                 body = item['text']
 
-                # Append footnote citations if present
                 footnotes = item.get('footnotes', [])
                 if footnotes:
                     fn_lines = "\nFootnote Citations:"
@@ -114,7 +136,6 @@ Answer directly and specifically. Start your answer immediately without preamble
                 context_parts.append(f"{header}\n{body}")
 
             elif 'person_name' in item:
-                # Ancestry record
                 parts = [
                     f"[Ancestry Record {i+1}]",
                     f"Name: {item.get('person_name', 'Unknown')}"

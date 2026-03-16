@@ -33,8 +33,8 @@ async def upload_document(
     db: Session = Depends(get_db)
 ):
     """
-    Upload a document. For DOCX files, extracts footnotes directly from
-    Word XML so that footnote references are correctly linked to chunks.
+    Upload a document. Embeddings are generated in batches for speed.
+    For DOCX files, footnotes are extracted and linked to chunks.
     """
     try:
         file_ext = os.path.splitext(file.filename)[1].lower()
@@ -54,22 +54,13 @@ async def upload_document(
             os.remove(file_path)
             raise HTTPException(status_code=413, detail="File too large")
 
-        # ── For DOCX: use XML-based extraction that preserves footnote refs ──
+        # ── Extract text, chunks, and footnotes ──
         if file_ext == '.docx':
-            logger.info(f"Extracting footnotes from DOCX: {file.filename}")
             footnotes = DocumentProcessor.extract_footnotes_from_docx(file_path)
-            logger.info(f"Found {len(footnotes)} footnotes")
-
+            logger.info(f"Extracted {len(footnotes)} footnotes")
             full_text, chunks, chunk_footnote_map = \
                 DocumentProcessor.build_text_and_chunk_footnote_map(file_path, footnotes)
-
-            logger.info(
-                f"Extracted {len(chunks)} chunks, "
-                f"footnotes linked to {len(chunk_footnote_map)} chunks"
-            )
-
         else:
-            # Non-DOCX: standard extraction, no footnotes
             try:
                 full_text, chunks = DocumentProcessor.process_document(file_path)
             except Exception as e:
@@ -77,6 +68,8 @@ async def upload_document(
                 raise HTTPException(status_code=400, detail=f"Error processing file: {str(e)}")
             footnotes = {}
             chunk_footnote_map = {}
+
+        logger.info(f"Extracted {len(chunks)} chunks from {file.filename}")
 
         # ── Create document record ──
         document = Document(
@@ -107,16 +100,23 @@ async def upload_document(
             )
             db.add(fn_obj)
             footnote_objects[fn_number] = fn_obj
-
         db.flush()
 
-        # ── Generate embeddings and save chunks ──
+        # ── Generate ALL embeddings in batches ──
+        logger.info(f"Generating embeddings for {len(chunks)} chunks in batches...")
+        embeddings = embedding_service.embed_texts(chunks, batch_size=32)
+        logger.info(f"Embeddings generated — {len(embeddings)} total")
+
+        # ── Save chunks with embeddings ──
         success_count = 0
         error_count = 0
 
-        for idx, chunk_text in enumerate(chunks):
+        for idx, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
             try:
-                embedding = embedding_service.embed_text(chunk_text)
+                # Skip zero-vector embeddings (failed batches)
+                if all(v == 0.0 for v in embedding[:10]):
+                    error_count += 1
+                    continue
 
                 doc_chunk = DocumentChunk(
                     document_id=document_id,
@@ -133,16 +133,15 @@ async def upload_document(
                         fn_num = fn_ref["number"]
                         if fn_num in footnote_objects:
                             footnote_objects[fn_num].chunk_id = doc_chunk.id
-                            logger.debug(f"Linked footnote {fn_num} to chunk {idx}")
 
                 success_count += 1
 
-                if idx % 50 == 0:
+                if idx % 100 == 0:
                     db.flush()
-                    logger.info(f"Processed {idx}/{len(chunks)} chunks...")
+                    logger.info(f"Saved {idx}/{len(chunks)} chunks...")
 
             except Exception as e:
-                logger.error(f"Error embedding chunk {idx}: {e}")
+                logger.error(f"Error saving chunk {idx}: {e}")
                 error_count += 1
                 continue
 
@@ -165,8 +164,8 @@ async def upload_document(
         logger.info(
             f"Document {document_id} fully processed. "
             f"Chunks: {success_count} success, {error_count} errors. "
-            f"Footnotes: {len(footnotes)} total, "
-            f"{len(chunk_footnote_map)} chunks with linked footnotes."
+            f"Footnotes: {len(footnotes)} extracted, "
+            f"{len(chunk_footnote_map)} chunks linked."
         )
 
         return {
@@ -179,7 +178,7 @@ async def upload_document(
             "embedding_errors": error_count,
             "footnotes_extracted": len(footnotes),
             "footnotes_linked_to_chunks": len(chunk_footnote_map),
-            "message": "Document uploaded with footnotes correctly linked to chunks"
+            "message": "Document uploaded successfully with batch embeddings"
         }
 
     except HTTPException:
@@ -200,10 +199,8 @@ async def list_documents(
         query = db.query(Document)
         if doc_type:
             query = query.filter(Document.document_type == doc_type.lower())
-
         total = query.count()
         documents = query.order_by(Document.upload_date.desc()).offset(skip).limit(limit).all()
-
         return {
             "total": total,
             "documents": [
@@ -231,7 +228,6 @@ async def get_document(document_id: int, db: Session = Depends(get_db)):
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
-
         return {
             "id": document.id,
             "title": document.title,
@@ -257,7 +253,6 @@ async def get_document_footnotes(document_id: int, db: Session = Depends(get_db)
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
-
         return {
             "document_id": document_id,
             "title": document.title,
@@ -277,14 +272,11 @@ async def delete_document(document_id: int, db: Session = Depends(get_db)):
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
-
         file_path = os.path.join(settings.upload_directory, document.file_name)
         if os.path.exists(file_path):
             os.remove(file_path)
-
         db.delete(document)
         db.commit()
-
         return {"success": True, "message": "Document deleted successfully"}
     except HTTPException:
         raise
