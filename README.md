@@ -89,10 +89,37 @@ cp .env.example .env
 
 ### 2. Configure Environment Variables
 
-Edit `.env` and add your OpenAI API key:
+Edit `.env` and add your OpenAI API key (if using OpenAI):
 
 ```env
 OPENAI_API_KEY=sk-your-api-key-here
+```
+
+**Set your LLM provider** (must match your chosen service):
+
+```env
+LLM_PROVIDER=ollama  # or "openai" / "groq"
+```
+
+### LLM Provider Quick Reference
+
+#### OpenAI
+```env
+OPENAI_API_KEY=sk-your-api-key-here
+OPENAI_MODEL=gpt-4o-mini
+```
+
+#### Ollama (local or remote)
+```env
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_CHAT_MODEL=llama3.2:1b
+OLLAMA_EMBED_MODEL=nomic-embed-text
+```
+
+#### Groq
+```env
+GROQ_API_KEY=your-groq-api-key
+GROQ_MODEL=llama-3.1-8b-instant
 ```
 
 Other important settings:
@@ -228,6 +255,13 @@ Open your browser and navigate to: **http://localhost:3000**
 - `footnote_number`: Footnote number (e.g., "120")
 - `footnote_text`: Full footnote content
 - `page_number`: Page number (optional)
+
+### Query History Table
+- `id`: Query ID
+- `query_text`: The text of the user's query
+- `results`: JSON results from the query
+- `query_date`: Timestamp of the query
+- `relevance_score`: Optional relevance score
 
 ## Troubleshooting
 

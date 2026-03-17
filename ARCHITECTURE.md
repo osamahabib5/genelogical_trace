@@ -27,6 +27,68 @@ This document provides a high‑level description of the main components and dat
 - **Tables:** Documents, DocumentChunks, AncestryRecords, QueryHistory, etc.
 - Embeddings are stored as vector columns so that similarity queries (cosine distance) can be run inside SQL.
 
+#### Database Schema Diagram
+
+```mermaid
+erDiagram
+    documents ||--o{ document_chunks : "1:N"
+    documents ||--o{ ancestry_data : "1:N"
+    documents ||--o{ document_footnotes : "1:N"
+    document_chunks ||--o{ document_footnotes : "1:1 optional"
+
+    documents {
+        int id PK
+        varchar title
+        varchar document_type
+        varchar file_name
+        text content
+        timestamp upload_date
+        varchar uploaded_by
+        jsonb doc_metadata
+    }
+
+    document_chunks {
+        int id PK
+        int document_id FK
+        text chunk_text
+        int chunk_number
+        vector embedding
+    }
+
+    ancestry_data {
+        int id PK
+        int document_id FK
+        varchar person_name
+        varchar birth_date
+        varchar birth_location
+        varchar death_date
+        varchar death_location
+        varchar occupation
+        varchar relation_type
+        varchar related_to
+        text raw_text
+        vector embedding
+        timestamp extraction_date
+    }
+
+    query_history {
+        int id PK
+        text query_text
+        jsonb results
+        timestamp query_date
+        float relevance_score
+    }
+
+    document_footnotes {
+        int id PK
+        int document_id FK
+        int chunk_id FK
+        varchar footnote_number
+        text footnote_text
+        int page_number
+    }
+```
+
 ### 1.3 AI/ML Services
 - **Embeddings provider:** OpenAI (or locally hosted model) used by `embedding_service`.
 - **LLM provider:** By default the system is configured to use a locally‑hosted open source model via **Ollama** (e.g. `llama3.1`), though OpenAI's Chat API can be selected instead.  The `llm_service` wraps calls to either provider.
