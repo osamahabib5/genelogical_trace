@@ -54,6 +54,4 @@ jobs:
         az containerapp update \
           --name genealogy-frontend \
           --resource-group ${{ secrets.RESOURCE_GROUP }} \
-          --image ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }} \
-          --ingress external \
-          --target-port 80
+          --image ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
