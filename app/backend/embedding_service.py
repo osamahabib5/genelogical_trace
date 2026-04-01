@@ -1,5 +1,5 @@
 """
-Embedding service - supports Ollama and OpenAI
+Embedding service - supports Ollama, OpenAI, and Azure Foundry
 """
 
 import logging
@@ -20,6 +20,8 @@ class EmbeddingService:
         try:
             if self.provider == "openai":
                 return self._embed_openai_batch([text])[0]
+            elif self.provider == "azure-foundry":
+                return self._embed_azure_foundry_batch([text])[0]
             else:
                 return self._embed_ollama_batch([text])[0]
         except Exception as e:
@@ -43,6 +45,8 @@ class EmbeddingService:
             try:
                 if self.provider == "openai":
                     batch_embeddings = self._embed_openai_batch(batch)
+                elif self.provider == "azure-foundry":
+                    batch_embeddings = self._embed_azure_foundry_batch(batch)
                 else:
                     batch_embeddings = self._embed_ollama_batch(batch)
                 all_embeddings.extend(batch_embeddings)
@@ -81,6 +85,26 @@ class EmbeddingService:
         response = client.embeddings.create(
             input=texts,
             model="text-embedding-3-small"
+        )
+        # Results are returned in the same order as input
+        return [item.embedding for item in response.data]
+
+    def _embed_azure_foundry_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        Send multiple texts to Azure Foundry embeddings endpoint.
+        Uses the OpenAI SDK with Azure Foundry endpoint.
+        """
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=settings.azure_foundry_api_key,
+            base_url=settings.azure_foundry_endpoint,
+            default_headers={"User-Agent": "genealogy-chatbot/1.0"}
+        )
+
+        response = client.embeddings.create(
+            input=texts,
+            model=settings.azure_foundry_embed_model
         )
         # Results are returned in the same order as input
         return [item.embedding for item in response.data]

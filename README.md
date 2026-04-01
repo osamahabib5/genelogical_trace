@@ -154,6 +154,18 @@ docker-compose logs postgres
 
 Open your browser and navigate to: **http://localhost:3000**
 
+## Deployment to Azure Container Apps
+
+For production deployment, see the [Azure deployment guide](deployment/README.md).
+
+Quick deployment:
+```bash
+cd deployment
+./deploy.sh  # Linux/Mac
+# or
+.\deploy.ps1  # Windows
+```
+
 ## API Endpoints
 
 ### Documents

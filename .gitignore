@@ -1,5 +1,6 @@
 # Git ignore file
 .env
+.env.azure
 .env.local
 .env.*.local
 *.pyc

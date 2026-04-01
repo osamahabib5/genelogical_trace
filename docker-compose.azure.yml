@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: genealogy_user
+      POSTGRES_PASSWORD: genealogy_password
+      POSTGRES_DB: genealogy_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./app/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U genealogy_user -d genealogy_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - genealogy-network
+
+  backend:
+    image: genealogyacr.azurecr.io/genealogy-backend:latest
+    env_file:
+      - .env.azure
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      LLM_PROVIDER: ${LLM_PROVIDER}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - genealogy-network
+
+  frontend:
+    image: genealogyacr.azurecr.io/genealogy-frontend:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      REACT_APP_API_URL: ${REACT_APP_API_URL}
+    networks:
+      - genealogy-network
+
+volumes:
+  postgres_data:
+
+networks:
+  genealogy-network:
+    driver: bridge</content>
+<parameter name="filePath">d:\North_American_Management_Work\genealogy_traceline\docker-compose.azure.yml

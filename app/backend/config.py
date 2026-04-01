@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     # CORS
     allowed_origins: str = ""
 
-    # LLM Provider — "ollama", "openai", or "groq"
+    # LLM Provider — "ollama", "openai", "groq", or "azure-foundry"
     llm_provider: str = "ollama"
 
     # OpenAI
@@ -28,13 +28,30 @@ class Settings(BaseSettings):
     ollama_chat_model: str = "llama3.2:1b"
     ollama_embed_model: str = "nomic-embed-text"
 
-    # Embeddings always use Ollama (local, free)
+    # Azure Foundry / Azure AI Endpoint
+    azure_foundry_endpoint: str = ""
+    azure_foundry_api_key: str = ""
+    azure_foundry_chat_model: str = "gpt-oss-120b"
+    azure_foundry_embed_model: str = "text-embedding-3-small"
+
+    # Embeddings dimension (768 for Ollama, 1536 for text-embedding-3-small/OpenAI)
     embedding_dimension: int = 768
 
     # Generation settings
     temperature: float = 0.1
     max_tokens: int = 300
     max_results: int = 8
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Set embedding dimension based on provider
+        if self.llm_provider in ["openai", "azure-foundry"]:
+            self.embedding_dimension = 1536
+        elif self.llm_provider == "groq":
+            # Groq doesn't provide embeddings, so keep default
+            self.embedding_dimension = 768
+        else:  # ollama
+            self.embedding_dimension = 768
 
     class Config:
         env_file = ".env"

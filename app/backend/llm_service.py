@@ -1,5 +1,5 @@
 """
-LLM service - supports Ollama, OpenAI, and Groq
+LLM service - supports Ollama, OpenAI, Groq, and Azure Foundry
 """
 
 import logging
@@ -32,6 +32,8 @@ class LLMService:
                 return self._call_openai(system_prompt, user_message)
             elif self.provider == "groq":
                 return self._call_groq(system_prompt, user_message)
+            elif self.provider == "azure-foundry":
+                return self._call_azure_foundry(system_prompt, user_message)
             else:
                 return self._call_ollama(system_prompt, user_message)
         except Exception as e:
@@ -85,6 +87,28 @@ class LLMService:
         client = OpenAI(api_key=settings.openai_api_key)
         response = client.chat.completions.create(
             model=settings.openai_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=settings.temperature,
+            max_tokens=settings.max_tokens
+        )
+        return response.choices[0].message.content
+
+    def _call_azure_foundry(self, system_prompt: str, user_message: str) -> str:
+        """Call Azure Foundry AI Hub endpoint."""
+        from openai import OpenAI
+
+        # Use OpenAI SDK with Azure Foundry endpoint
+        client = OpenAI(
+            api_key=settings.azure_foundry_api_key,
+            base_url=settings.azure_foundry_endpoint,
+            default_headers={"User-Agent": "genealogy-chatbot/1.0"}
+        )
+
+        response = client.chat.completions.create(
+            model=settings.azure_foundry_chat_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
