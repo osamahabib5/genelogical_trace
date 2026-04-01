@@ -47,7 +47,7 @@ chmod +x deploy.sh
 **Windows:**
 ```bash
 cd deployment
-.\deploy.ps1 genealogy-rg eastus genealogyacr "your-postgres-connection-string"
+.\deploy.ps1 sofafea-db eastus genealogyacr "your-postgres-connection-string"
 ```
 
 Replace `your-postgres-connection-string` with your actual PostgreSQL connection string in the format:
