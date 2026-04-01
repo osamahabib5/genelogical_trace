@@ -74,7 +74,7 @@ jobs:
         push: true
         tags: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
         build-args: |
-          REACT_APP_API_URL=https://genealogy-backend.orangeground-33df987d.eastus.azurecontainerapps.io
+          REACT_APP_API_URL=https://genealogy-frontend.orangeground-33df987d.eastus.azurecontainerapps.io
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
