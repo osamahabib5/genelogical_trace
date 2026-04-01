@@ -47,9 +47,7 @@ jobs:
           --set-env-vars LLM_PROVIDER="azure-foundry" \
                          AZURE_FOUNDRY_ENDPOINT=${{ secrets.AZURE_FOUNDRY_ENDPOINT }} \
                          AZURE_FOUNDRY_API_KEY=${{ secrets.AZURE_FOUNDRY_API_KEY }} \
-                         AZURE_POSTGRES_CONNECTION_STRING=${{ secrets.AZURE_POSTGRES_CONNECTION_STRING }} \
-          --ingress external \
-          --target-port 8000
+                         AZURE_POSTGRES_CONNECTION_STRING=${{ secrets.AZURE_POSTGRES_CONNECTION_STRING }}
 
     - name: Deploy frontend to Azure Container Apps
       run: |
