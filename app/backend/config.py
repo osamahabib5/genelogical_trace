@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Database
+    # This will be overridden by AZURE_POSTGRES_CONNECTION_STRING in Azure
     database_url: str = "postgresql://genealogy_user:genealogy_password@postgres:5432/genealogy_db"
 
     # File upload
@@ -29,12 +30,13 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "nomic-embed-text"
 
     # Azure Foundry / Azure AI Endpoint
+    # These will be mapped from AZURE_FOUNDRY_ENDPOINT, etc.
     azure_foundry_endpoint: str = ""
     azure_foundry_api_key: str = ""
     azure_foundry_chat_model: str = "gpt-oss-120b"
     azure_foundry_embed_model: str = "text-embedding-3-small"
 
-    # Embeddings dimension (768 for Ollama, 1536 for text-embedding-3-small/OpenAI)
+    # Embeddings dimension
     embedding_dimension: int = 768
 
     # Generation settings
@@ -44,17 +46,19 @@ class Settings(BaseSettings):
 
     def __init__(self, **data):
         super().__init__(**data)
+        
         # Set embedding dimension based on provider
+        # Note: If using Azure Foundry for embeddings, ensure it matches your deployment
         if self.llm_provider in ["openai", "azure-foundry"]:
             self.embedding_dimension = 1536
-        elif self.llm_provider == "groq":
-            # Groq doesn't provide embeddings, so keep default
-            self.embedding_dimension = 768
-        else:  # ollama
+        else:  # groq or ollama
             self.embedding_dimension = 768
 
-    class Config:
-        env_file = ".env"
+    model_config = {
+        "env_file": ".env",
+        "extra": "ignore",
+        "case_sensitive": False
+    }
 
 
 settings = Settings()

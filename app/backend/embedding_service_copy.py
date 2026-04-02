@@ -31,14 +31,17 @@ class EmbeddingService:
     def embed_texts(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
         """
         Embed multiple texts using batching for efficiency.
+        Sends batch_size texts per API call instead of one at a time.
         """
         if not texts:
             return []
 
         all_embeddings = []
+
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            logger.info(f"Embedding batch {i//batch_size + 1} ({i+1}-{min(i+batch_size, len(texts))} of {len(texts)})")
+            logger.info(f"Embedding batch {i//batch_size + 1} "
+                       f"({i+1}-{min(i+batch_size, len(texts))} of {len(texts)})")
             try:
                 if self.provider == "openai":
                     batch_embeddings = self._embed_openai_batch(batch)
@@ -49,57 +52,62 @@ class EmbeddingService:
                 all_embeddings.extend(batch_embeddings)
             except Exception as e:
                 logger.error(f"Error embedding batch {i//batch_size + 1}: {e}")
-                all_embeddings.extend([[0.0] * settings.embedding_dimension for _ in batch])
+                # Fall back to zero vectors for failed batch
+                all_embeddings.extend(
+                    [[0.0] * settings.embedding_dimension for _ in batch]
+                )
 
         return all_embeddings
 
     def _embed_ollama_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        Send multiple texts to Ollama /api/embed in one request.
+        Ollama accepts a list under the 'input' key.
+        """
         response = requests.post(
             f"{settings.ollama_base_url}/api/embed",
             json={
                 "model": settings.ollama_embed_model,
-                "input": texts
+                "input": texts  # list of strings — Ollama handles batching natively
             },
-            timeout=120
+            timeout=120  # longer timeout for batches
         )
         response.raise_for_status()
         return response.json()["embeddings"]
 
     def _embed_openai_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        Send multiple texts to OpenAI embeddings API in one request.
+        OpenAI accepts up to 2048 inputs per call.
+        """
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
         response = client.embeddings.create(
             input=texts,
-            model=settings.openai_model
+            model="text-embedding-3-small"
         )
+        # Results are returned in the same order as input
         return [item.embedding for item in response.data]
 
     def _embed_azure_foundry_batch(self, texts: List[str]) -> List[List[float]]:
         """
         Send multiple texts to Azure Foundry embeddings endpoint.
+        Uses the OpenAI SDK with Azure Foundry endpoint.
         """
-        from openai import AzureOpenAI
+        from openai import OpenAI
 
-        endpoint = settings.azure_foundry_endpoint
-        if not endpoint.endswith('/'):
-            endpoint += '/'
-
-        # Standard OpenAI-style Azure authentication
-        client = AzureOpenAI(
-            api_version="2024-12-01-preview",
-            azure_endpoint=endpoint,
-            api_key=settings.azure_foundry_api_key
+        client = OpenAI(
+            api_key=settings.azure_foundry_api_key,
+            base_url=settings.azure_foundry_endpoint,
+            default_headers={"User-Agent": "genealogy-chatbot/1.0"}
         )
 
-        logger.info(f"Embedding {len(texts)} texts using Azure Foundry: {settings.azure_foundry_embed_model}")
         response = client.embeddings.create(
             input=texts,
             model=settings.azure_foundry_embed_model
         )
-        
-        embeddings = [item.embedding for item in response.data]
-        logger.info(f"Successfully generated {len(embeddings)} embeddings")
-        return embeddings
+        # Results are returned in the same order as input
+        return [item.embedding for item in response.data]
 
 
 embedding_service = EmbeddingService()
