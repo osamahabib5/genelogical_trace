@@ -7,11 +7,14 @@ import DocumentList from './components/DocumentList';
 import FamilyTree from './components/FamilyTree';
 
 // Use the environment variable set during Docker build, or fallback to localhost
-const API_URL = process.env.REACT_APP_API_URL || (
-  process.env.NODE_ENV === 'production'
-    ? 'https://genealogy-backend.orangeground-33df987d.eastus.azurecontainerapps.io/api'
-    : 'http://localhost:8000/api'
-);
+// const API_URL = process.env.REACT_APP_API_URL || (
+//   process.env.NODE_ENV === 'production'
+//     ? 'https://genealogy-backend.orangeground-33df987d.eastus.azurecontainerapps.io/api'
+//     : 'http://localhost:8000/api'
+// );
+
+// This tells the browser: "Look for /api on the same server that served this HTML"
+const API_URL = process.env.REACT_APP_API_URL || '/api';
 
 console.log('API_URL configured as:', API_URL);
 
