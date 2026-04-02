@@ -6,8 +6,8 @@ import Chatbot from './components/Chatbot';
 import DocumentList from './components/DocumentList';
 import FamilyTree from './components/FamilyTree';
 
-// const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
-const API_URL = process.env.REACT_APP_API_URL || '/api';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+
 
 function App() {
   const [activeTab, setActiveTab] = useState('chat');
