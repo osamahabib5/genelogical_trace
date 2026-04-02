@@ -3,7 +3,7 @@ FROM node:18-alpine AS build
 
 WORKDIR /app
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 RUN npm install
 
 # --- CRITICAL SECTION: Accept Build Args ---
@@ -17,6 +17,9 @@ RUN npm run build
 
 # Step 2: Serve the app using a lightweight server (Nginx)
 FROM nginx:stable-alpine
+
+# Copy nginx configuration for SPA routing
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 # Copy the build output from the first step to Nginx's html folder
 COPY --from=build /app/build /usr/share/nginx/html

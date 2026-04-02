@@ -73,16 +73,17 @@ jobs:
       with:
         context: ./app/frontend
         push: true
-        # Force a fresh build once to ensure the new /api URL is "baked" in
+        # Force a fresh build to ensure the new API URL is "baked" in
         no-cache: true 
         tags: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
-        # CRITICAL: Added /api to fix the 404 error
+        # CRITICAL: Pass the backend URL as a build argument
         build-args: |
           REACT_APP_API_URL=https://genealogy-backend.orangeground-33df987d.eastus.azurecontainerapps.io/api
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
     - name: Deploy frontend to Azure Container Apps
+      if: steps.changes.outputs.frontend == 'true'
       run: |
         az containerapp update \
           --name genealogy-frontend \
@@ -92,4 +93,5 @@ jobs:
         az containerapp ingress update \
           --name genealogy-frontend \
           --resource-group ${{ secrets.RESOURCE_GROUP }} \
-          --target-port 80
+          --target-port 80 \
+          --type external

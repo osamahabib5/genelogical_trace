@@ -6,12 +6,19 @@ import Chatbot from './components/Chatbot';
 import DocumentList from './components/DocumentList';
 import FamilyTree from './components/FamilyTree';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+// Use the environment variable set during Docker build, or fallback to localhost
+const API_URL = process.env.REACT_APP_API_URL || (
+  process.env.NODE_ENV === 'production'
+    ? 'https://genealogy-backend.orangeground-33df987d.eastus.azurecontainerapps.io/api'
+    : 'http://localhost:8000/api'
+);
 
+console.log('API_URL configured as:', API_URL);
 
 function App() {
   const [activeTab, setActiveTab] = useState('chat');
   const [documents, setDocuments] = useState([]);
+  const [loadError, setLoadError] = useState(null);
 
   useEffect(() => {
     loadDocuments();
@@ -19,10 +26,13 @@ function App() {
 
   const loadDocuments = async () => {
     try {
+      setLoadError(null);
       const response = await axios.get(`${API_URL}/documents/list`);
-      setDocuments(response.data.documents);
+      setDocuments(response.data.documents || []);
     } catch (error) {
       console.error('Error loading documents:', error);
+      setLoadError('Failed to load documents. Check if backend is running.');
+      setDocuments([]);
     }
   };
 
@@ -37,6 +47,11 @@ function App() {
       <header className="app-header">
         <h1>📚 SOFAFEA Genealogy Assistant</h1>
         <p>Trace African American genealogical ancestry through historical documents and records</p>
+        {process.env.NODE_ENV === 'development' && (
+          <p style={{ fontSize: '0.8em', color: '#666' }}>
+            API: {API_URL}
+          </p>
+        )}
       </header>
 
       <nav className="app-nav">
@@ -68,6 +83,12 @@ function App() {
           👨‍👩‍👧‍👦 Family Tree
         </button>
       </nav>
+
+      {loadError && (
+        <div className="error-banner">
+          <p>⚠️ {loadError}</p>
+        </div>
+      )}
 
       <main className="app-main">
         {activeTab === 'chat' && <Chatbot apiUrl={API_URL} />}
