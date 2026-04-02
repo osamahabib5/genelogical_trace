@@ -63,6 +63,7 @@ jobs:
           --set-env-vars LLM_PROVIDER="azure-foundry" \
                          ALLOWED_ORIGINS="https://genealogy-frontend.orangeground-33df987d.eastus.azurecontainerapps.io" \
                          AZURE_FOUNDRY_ENDPOINT=${{ secrets.AZURE_FOUNDRY_ENDPOINT }} \
+                         AZURE_FOUNDRY_CHAT_ENDPOINT=${{ secrets.AZURE_FOUNDRY_CHAT_ENDPOINT }} \
                          AZURE_FOUNDRY_API_KEY=${{ secrets.AZURE_FOUNDRY_API_KEY }} \
                          AZURE_FOUNDRY_CHAT_MODEL=${{ secrets.AZURE_FOUNDRY_CHAT_MODEL }} \
                          AZURE_FOUNDRY_EMBED_MODEL=${{ secrets.AZURE_FOUNDRY_EMBED_MODEL }} \

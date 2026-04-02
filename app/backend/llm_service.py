@@ -103,7 +103,7 @@ class LLMService:
         # Use OpenAI SDK with Azure Foundry endpoint
         client = OpenAI(
             api_key=settings.azure_foundry_api_key,
-            base_url=settings.azure_foundry_endpoint,
+            base_url=settings.azure_foundry_chat_endpoint,
             default_headers={"User-Agent": "genealogy-chatbot/1.0"}
         )
 
