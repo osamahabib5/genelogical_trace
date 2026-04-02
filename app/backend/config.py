@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # CORS
     allowed_origins: str = ""
 
-    # LLM Provider — "ollama", "openai", "groq", or "azure-foundry"
+    ## LLM Provider — "ollama", "openai", "groq", or "azure-foundry"
     llm_provider: str = "groq"
 
     # OpenAI
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     azure_foundry_endpoint: str = ""
     azure_foundry_chat_endpoint: str = ""
     azure_foundry_api_key: str = ""
-    azure_foundry_chat_model: str = "gpt-oss-120b"
+    azure_foundry_chat_model: str = ""
     azure_foundry_embed_model: str = "text-embedding-3-small"
 
     # Embeddings dimension
