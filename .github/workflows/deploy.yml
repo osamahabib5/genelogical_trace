@@ -84,9 +84,16 @@ jobs:
 
     - name: Deploy frontend to Azure Container Apps
       if: steps.changes.outputs.frontend == 'true'
-      run: |
+      run:
+      # 1. Update the image first |
         az containerapp update \
           --name genealogy-frontend \
           --resource-group ${{ secrets.RESOURCE_GROUP }} \
           --image ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }} \
           --target-port 80
+      
+        az containerapp ingress update \
+          --name genealogy-frontend \
+          --resource-group ${{ secrets.RESOURCE_GROUP }} \
+          --target-port 80 \
+          --type external
