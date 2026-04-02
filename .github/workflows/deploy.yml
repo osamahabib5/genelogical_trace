@@ -18,7 +18,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # 1. Detect which folders changed
+    # 1. Detect which folders changed to skip unnecessary builds
     - name: Check for changes
       uses: dorny/paths-filter@v3
       id: changes
@@ -38,7 +38,7 @@ jobs:
       run: |
         az acr login --name ${{ secrets.ACR_NAME }}
 
-    # 2. Set up Docker Buildx (Required for advanced caching)
+    # 2. Set up Docker Buildx for cloud-based layer caching
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
@@ -61,6 +61,7 @@ jobs:
           --resource-group ${{ secrets.RESOURCE_GROUP }} \
           --image ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }} \
           --set-env-vars LLM_PROVIDER="azure-foundry" \
+                         ALLOWED_ORIGINS="https://genealogy-frontend.orangeground-33df987d.eastus.azurecontainerapps.io" \
                          AZURE_FOUNDRY_ENDPOINT=${{ secrets.AZURE_FOUNDRY_ENDPOINT }} \
                          AZURE_FOUNDRY_API_KEY=${{ secrets.AZURE_FOUNDRY_API_KEY }} \
                          AZURE_POSTGRES_CONNECTION_STRING=${{ secrets.AZURE_POSTGRES_CONNECTION_STRING }}
@@ -72,9 +73,12 @@ jobs:
       with:
         context: ./app/frontend
         push: true
+        # Force a fresh build once to ensure the new /api URL is "baked" in
+        no-cache: true 
         tags: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+        # CRITICAL: Added /api to fix the 404 error
         build-args: |
-          REACT_APP_API_URL=https://genealogy-backend.orangeground-33df987d.eastus.azurecontainerapps.io
+          REACT_APP_API_URL=https://genealogy-backend.orangeground-33df987d.eastus.azurecontainerapps.io/api
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
