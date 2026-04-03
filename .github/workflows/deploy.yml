@@ -67,6 +67,7 @@ jobs:
                          AZURE_FOUNDRY_API_KEY=${{ secrets.AZURE_FOUNDRY_API_KEY }} \
                          AZURE_FOUNDRY_CHAT_MODEL=${{ secrets.AZURE_FOUNDRY_CHAT_MODEL }} \
                          AZURE_FOUNDRY_EMBED_MODEL=${{ secrets.AZURE_FOUNDRY_EMBED_MODEL }} \
+                         AZURE_FOUNDRY_EMBED_VERSION=${{ secrets.AZURE_FOUNDRY_EMBED_VERSION }} \
                          AZURE_POSTGRES_CONNECTION_STRING=${{ secrets.AZURE_POSTGRES_CONNECTION_STRING }}
 
     # --- FRONTEND SECTION ---

@@ -86,7 +86,7 @@ class EmbeddingService:
 
         # Standard OpenAI-style Azure authentication
         client = AzureOpenAI(
-            api_version="2024-12-01-preview",
+            api_version=settings.azure_foundry_embed_version,
             azure_endpoint=settings.azure_foundry_endpoint,
             api_key=settings.azure_foundry_api_key
         )

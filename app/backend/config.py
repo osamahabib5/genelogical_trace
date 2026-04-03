@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     # Azure Foundry / Azure AI Endpoint
     # These will be mapped from AZURE_FOUNDRY_ENDPOINT, etc.
+    azure_foundry_embed_version: str = ""
     azure_foundry_endpoint: str = ""
     azure_foundry_chat_endpoint: str = ""
     azure_foundry_api_key: str = ""
