@@ -6,6 +6,9 @@ class Settings(BaseSettings):
     # This will be overridden by AZURE_POSTGRES_CONNECTION_STRING in Azure
     database_url: str = "postgresql://genealogy_user:genealogy_password@postgres:5432/genealogy_db"
 
+    # Azure Database (for dual writing)
+    azure_postgres_connection_string: str = ""
+
     # File upload
     upload_directory: str = "/app/uploads"
     max_upload_size: int = 1000 * 1024 * 1024  # 1000MB

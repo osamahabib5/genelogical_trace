@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 import uuid
 
-from database import SessionLocal, Document, DocumentChunk, AncestryData, DocumentFootnote
+from database import SessionLocal, Document, DocumentChunk, AncestryData, DocumentFootnote, AzureSessionLocal
 from document_processor import DocumentProcessor
 from embedding_service import embedding_service
 from config import settings
@@ -37,6 +37,9 @@ async def upload_document(
     For DOCX files, footnotes are extracted and linked to chunks.
     """
     try:
+        azure_db = None
+        if AzureSessionLocal:
+            azure_db = AzureSessionLocal()
         file_ext = os.path.splitext(file.filename)[1].lower()
         if file_ext not in {'.pdf', '.docx', '.txt', '.json'}:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
@@ -89,8 +92,22 @@ async def upload_document(
         document_id = document.id
         logger.info(f"Created document record ID={document_id}")
 
+        if azure_db:
+            azure_document = Document(
+                title=document.title,
+                document_type=document.document_type,
+                file_name=document.file_name,
+                content=document.content,
+                doc_metadata=document.doc_metadata
+            )
+            azure_db.add(azure_document)
+            azure_db.flush()
+            azure_document_id = azure_document.id
+            logger.info(f"Created Azure document record ID={azure_document_id}")
+
         # ── Save all footnotes ──
         footnote_objects = {}
+        azure_footnote_objects = {}
         for fn_number, fn_text in footnotes.items():
             fn_obj = DocumentFootnote(
                 document_id=document_id,
@@ -100,7 +117,18 @@ async def upload_document(
             )
             db.add(fn_obj)
             footnote_objects[fn_number] = fn_obj
+            if azure_db:
+                azure_fn_obj = DocumentFootnote(
+                    document_id=azure_document_id,
+                    footnote_number=fn_number,
+                    footnote_text=fn_text,
+                    chunk_id=None
+                )
+                azure_db.add(azure_fn_obj)
+                azure_footnote_objects[fn_number] = azure_fn_obj
         db.flush()
+        if azure_db:
+            azure_db.flush()
 
         # ── Generate ALL embeddings in batches ──
         logger.info(f"Generating embeddings for {len(chunks)} chunks in batches...")
@@ -125,7 +153,17 @@ async def upload_document(
                     embedding=embedding
                 )
                 db.add(doc_chunk)
+                if azure_db:
+                    azure_doc_chunk = DocumentChunk(
+                        document_id=azure_document_id,
+                        chunk_text=chunk_text,
+                        chunk_number=idx,
+                        embedding=embedding
+                    )
+                    azure_db.add(azure_doc_chunk)
                 db.flush()
+                if azure_db:
+                    azure_db.flush()
 
                 # Link footnotes to this chunk
                 if idx in chunk_footnote_map:
@@ -133,6 +171,8 @@ async def upload_document(
                         fn_num = fn_ref["number"]
                         if fn_num in footnote_objects:
                             footnote_objects[fn_num].chunk_id = doc_chunk.id
+                            if azure_db and fn_num in azure_footnote_objects:
+                                azure_footnote_objects[fn_num].chunk_id = azure_doc_chunk.id
 
                 success_count += 1
 
@@ -157,10 +197,21 @@ async def upload_document(
                     embedding=full_embedding
                 )
                 db.add(ancestry_record)
+                if azure_db:
+                    azure_ancestry = AncestryData(
+                        document_id=azure_document_id,
+                        person_name=person_name,
+                        raw_text=full_text[:500],
+                        embedding=full_embedding
+                    )
+                    azure_db.add(azure_ancestry)
         except Exception as e:
             logger.warning(f"Entity extraction failed (non-critical): {e}")
 
         db.commit()
+        if azure_db:
+            azure_db.commit()
+            azure_db.close()
         logger.info(
             f"Document {document_id} fully processed. "
             f"Chunks: {success_count} success, {error_count} errors. "

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel
 
-from database import SessionLocal, QueryHistory
+from database import SessionLocal, QueryHistory, AzureSessionLocal
 from embedding_service import embedding_service
 from retrieval_service import RetrievalService
 from llm_service import llm_service
@@ -71,6 +71,10 @@ async def search_ancestry(
     request: SearchRequest,
     db: Session = Depends(get_db)
 ):
+    azure_db = None
+    if AzureSessionLocal:
+        azure_db = AzureSessionLocal()
+
     query = request.query
     include_documents = request.include_documents
     include_ancestry_data = request.include_ancestry_data
@@ -96,8 +100,14 @@ async def search_ancestry(
         try:
             db.add(QueryHistory(query_text=query, results=results))
             db.commit()
+            if azure_db:
+                azure_db.add(QueryHistory(query_text=query, results=results))
+                azure_db.commit()
+                azure_db.close()
         except Exception as e:
             logger.warning(f"Could not save query history: {e}")
+            if azure_db:
+                azure_db.close()
 
         return results
 
@@ -111,6 +121,10 @@ async def ask_chatbot(
     request: AskRequest,
     db: Session = Depends(get_db)
 ):
+    azure_db = None
+    if AzureSessionLocal:
+        azure_db = AzureSessionLocal()
+
     query = request.query
     include_context = request.include_context
 
@@ -154,8 +168,17 @@ async def ask_chatbot(
                 results={"response": response, "context_count": len(context), "response_time": elapsed}
             ))
             db.commit()
+            if azure_db:
+                azure_db.add(QueryHistory(
+                    query_text=query,
+                    results={"response": response, "context_count": len(context), "response_time": elapsed}
+                ))
+                azure_db.commit()
+                azure_db.close()
         except Exception as e:
             logger.warning(f"Could not save query history: {e}")
+            if azure_db:
+                azure_db.close()
 
         return {
             "query": query,

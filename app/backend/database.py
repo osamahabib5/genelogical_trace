@@ -133,7 +133,16 @@ engine = create_engine(settings.database_url)
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Azure engine for dual writing
+azure_engine = None
+AzureSessionLocal = None
+if settings.azure_postgres_connection_string:
+    azure_engine = create_engine(settings.azure_postgres_connection_string)
+    AzureSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=azure_engine)
+
 
 def create_tables():
     """Create all tables in the database"""
     Base.metadata.create_all(bind=engine)
+    if azure_engine:
+        Base.metadata.create_all(bind=azure_engine)
