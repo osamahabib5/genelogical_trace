@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     azure_foundry_embed_model: str = "text-embedding-3-small"
 
     # Embeddings dimension
-    embedding_dimension: int = 768
+    embedding_dimension: int = 1536
 
     # Generation settings
     temperature: float = 0.1
