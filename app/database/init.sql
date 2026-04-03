@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     chunk_text TEXT NOT NULL,
     chunk_number INTEGER,
-    embedding vector(768) -- OpenAI embedding dimension
+    embedding vector(1536) -- OpenAI embedding dimension
 );
 
 -- Ancestry information table for structured genealogical data
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS ancestry_data (
     relation_type VARCHAR(100),
     related_to VARCHAR(255),
     raw_text TEXT,
-    embedding vector(768),
+    embedding vector(1536),
     extraction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
