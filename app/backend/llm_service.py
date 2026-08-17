@@ -1,5 +1,5 @@
 """
-LLM service - supports Ollama, OpenAI, Groq, and Azure Foundry
+LLM service - supports DeepSeek, OpenAI, Groq, Ollama, and Azure Foundry
 """
 
 import logging
@@ -30,6 +30,8 @@ class LLMService:
         try:
             if self.provider == "openai":
                 return self._call_openai(system_prompt, user_message)
+            elif self.provider == "deepseek":
+                return self._call_deepseek(system_prompt, user_message)
             elif self.provider == "groq":
                 return self._call_groq(system_prompt, user_message)
             elif self.provider == "azure-foundry":
@@ -82,6 +84,27 @@ class LLMService:
         response.raise_for_status()
         return response.json()["message"]["content"]
 
+    def _call_deepseek(self, system_prompt: str, user_message: str) -> str:
+        """Call the DeepSeek API (OpenAI-compatible)."""
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=settings.deepseek_api_key,
+            base_url=settings.deepseek_base_url
+        )
+        response = client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            stream=False,
+            reasoning_effort="high",
+            extra_body={"thinking": {"type": "enabled"}},
+            temperature=settings.temperature,
+            max_tokens=settings.max_tokens
+        )
+        return response.choices[0].message.content
+
     def _call_openai(self, system_prompt: str, user_message: str) -> str:
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
@@ -125,7 +148,7 @@ class LLMService:
 CRITICAL INSTRUCTIONS:
 1. You MUST answer based ONLY on the context provided. The context contains real excerpts from historical documents.
 2. If the context mentions a person, family, or event — use that information to answer directly and specifically.
-3. Do NOT say you cannot find information if it appears anywhere in the context.
+3. If you cannot find information in the documents, explicitly mention that answer is not in the documents. Don't generate any hallucinated responses.
 4. Do NOT suggest external research resources if the answer is in the context.
 5. When the context includes footnote citations, reference them in your answer using [footnote X] notation.
 6. Only say information is unavailable if it is genuinely absent from ALL provided context chunks.

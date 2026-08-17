@@ -24,13 +24,12 @@ dist/
 .egg
 .eggs/
 uploads/
+app/backend/uploads/
 *.db
 *.sqlite
 .postgres_data/
 .cache/
 .mypy_cache/
-# Docker
-docker-compose.override.yml
 *.log
 
 # Ollama local model/cache

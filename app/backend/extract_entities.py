@@ -5,7 +5,8 @@ Run this script to populate the ancestry_data table by scanning all document
 chunks and extracting structured person records using the LLM.
 
 Usage:
-    docker exec -it genealogy_traceline-backend-1 python3 /app/extract_entities.py
+    cd app/backend
+    python extract_entities.py
 """
 
 import sys
@@ -18,8 +19,7 @@ import re
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 
-# Add app directory to path
-sys.path.insert(0, '/app')
+# This script is run from the backend directory, so local imports work directly.
 
 from config import settings
 from database import Base, Document, DocumentChunk, AncestryData
@@ -61,6 +61,20 @@ def extract_people_from_chunk(chunk_text: str) -> list:
             client = Groq(api_key=settings.groq_api_key)
             response = client.chat.completions.create(
                 model=settings.groq_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+                temperature=0.0
+            )
+            raw = response.choices[0].message.content.strip()
+
+        elif settings.llm_provider == "deepseek":
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=settings.deepseek_api_key,
+                base_url=settings.deepseek_base_url
+            )
+            response = client.chat.completions.create(
+                model=settings.deepseek_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=800,
                 temperature=0.0

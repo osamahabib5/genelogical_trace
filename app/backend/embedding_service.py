@@ -1,5 +1,6 @@
 """
-Embedding service - supports Ollama, OpenAI, and Azure Foundry
+Embedding service - supports Ollama (default), OpenAI, and Azure Foundry.
+DeepSeek and Groq do not provide embedding endpoints.
 """
 
 import logging
@@ -12,11 +13,12 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingService:
     def __init__(self):
-        self.provider = settings.llm_provider
+        self.provider = settings.embedding_provider
         logger.info(f"Embedding service using provider: {self.provider}")
 
     def embed_text(self, text: str) -> List[float]:
         """Embed a single text string."""
+        logger.info(f"Embedding single text ({len(text)} chars) via provider '{self.provider}'")
         try:
             if self.provider == "openai":
                 return self._embed_openai_batch([text])[0]
@@ -47,6 +49,10 @@ class EmbeddingService:
                 else:
                     batch_embeddings = self._embed_ollama_batch(batch)
                 all_embeddings.extend(batch_embeddings)
+                logger.info(
+                    f"Embedded batch {i//batch_size + 1}: {len(batch_embeddings)} vectors"
+                    f" (dim={len(batch_embeddings[0]) if batch_embeddings else 'n/a'})"
+                )
             except Exception as e:
                 logger.error(f"Error embedding batch {i//batch_size + 1}: {e}")
                 all_embeddings.extend([[0.0] * settings.embedding_dimension for _ in batch])
@@ -63,14 +69,20 @@ class EmbeddingService:
             timeout=120
         )
         response.raise_for_status()
-        return response.json()["embeddings"]
+        embeddings = response.json()["embeddings"]
+        if embeddings:
+            logger.info(
+                f"Ollama '{settings.ollama_embed_model}' returned {len(embeddings)} "
+                f"embeddings of dimension {len(embeddings[0])}"
+            )
+        return embeddings
 
     def _embed_openai_batch(self, texts: List[str]) -> List[List[float]]:
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
         response = client.embeddings.create(
             input=texts,
-            model=settings.openai_model
+            model=settings.openai_embedding_model
         )
         return [item.embedding for item in response.data]
 

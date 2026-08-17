@@ -14,17 +14,18 @@ This document provides a high‑level description of the main components and dat
   - `routes/queries.py` handles search, chat (`/ask`), person/family lookups and history.
 - **Services:**
   - `document_processor.py` handles ingestion, text extraction, chunking and entity extraction.
-  - `embedding_service.py` wraps the OpenAI (or alternative) embeddings API.
+  - `embedding_service.py` wraps the embeddings API — local Ollama `nomic-embed-text` by default, with OpenAI (`text-embedding-3-small`) and Azure Foundry as alternatives.
   - `retrieval_service.py` provides vector similarity searches against pgvector tables plus specialized ancestry queries.
-  - `llm_service.py` is responsible for generating chatbot responses using the selected language model.
+  - `llm_service.py` is responsible for generating chatbot responses using the selected language model — **DeepSeek** by default (primary), with **Groq** as secondary.
 - **Database models:**
   - Defined in `database.py` (e.g. `Document`, `Chunk`, `AncestryRecord`, `QueryHistory`).
   - Database connection via SQLAlchemy and a `SessionLocal` factory.
 
-### 1.2 Database
-- **PostgreSQL** with the **pgvector** extension for storing numerical embeddings.
-- **Schema:** created by running `database/init.sql` or automatically when the backend starts.
-- **Tables:** Documents, DocumentChunks, AncestryRecords, QueryHistory, etc.
+### 1.2 Database (Supabase)
+- **Supabase** (managed PostgreSQL) with the **pgvector** extension for storing numerical embeddings.
+- **Connection:** configured through `DATABASE_URL` in `.env` (Supabase Dashboard → Project Settings → Database → Connection string).
+- **Schema:** created by running `database/supabase_setup.sql` in the Supabase SQL Editor, or automatically when the backend starts (`Base.metadata.create_all`).
+- **Tables:** Documents, DocumentChunks, AncestryRecords, QueryHistory, DocumentFootnotes.
 - Embeddings are stored as vector columns so that similarity queries (cosine distance) can be run inside SQL.
 
 #### Database Schema Diagram
@@ -91,7 +92,7 @@ erDiagram
 
 ### 1.3 AI/ML Services
 - **Embeddings provider:** OpenAI (or locally hosted model) used by `embedding_service`.
-- **LLM provider:** By default the system is configured to use a locally‑hosted open source model via **Ollama** (e.g. `llama3.1`), though OpenAI's Chat API can be selected instead.  The `llm_service` wraps calls to either provider.
+- **LLM provider:** The system defaults to the **DeepSeek** API (`deepseek-v4-pro`, OpenAI-compatible endpoint at `https://api.deepseek.com`), with **Groq** as a secondary option. `llm_service` wraps calls to either provider; embeddings come from a separate provider (local Ollama by default) because DeepSeek and Groq do not expose embedding endpoints.
 - **Genealogical entity extraction:** A lightweight NLP routine in `DocumentProcessor` that pulls names, dates, relationships, locations, etc. from text using regex or simple heuristics.
 
 ### 1.4 Frontend (React)
@@ -101,15 +102,17 @@ erDiagram
   - `DocumentUpload.js` – file selection and upload form hitting `/api/documents/upload`.
   - `DocumentList.js` – lists uploaded documents with filters.
   - `FamilyTree.js` – fetches family connections via `/api/queries/family/{name}`.
-- **Bundled** inside a Docker container; served on port 3000 in development.
+- Served by the React dev server (`npm start`) on port 3000 in development; `npm run build` produces a production bundle that can be served by any static host.
 
-### 1.5 Docker & Deployment
-- **docker-compose.yml** orchestrates three services:
-  1. **postgres** – database with volume for persistence.
-  2. **backend** – FastAPI server built from `app/backend/Dockerfile`.
-  3. **frontend** – React app built from `app/frontend/Dockerfile`.
-- **Environment variables** are specified in `.env` and forwarded to both backend and frontend where needed.
-- `docker-compose.dev.yml` contains overrides for local development (e.g., mounting source code volumes, enabling hot reload).
+### 1.5 Runtime Environment (venv)
+The application runs as plain local processes — no Docker:
+
+1. **Backend** – FastAPI + Uvicorn inside a Python virtual environment (`python -m venv venv`, then `uvicorn main:app --reload`). Port `8000`.
+2. **Frontend** – React dev server via `npm start`. Port `3000`.
+3. **Database** – hosted **Supabase** PostgreSQL (with pgvector). No local database container.
+
+- **Environment variables** live in `.env` (copied from `.env.example`) and are read by `config.py` via pydantic-settings.
+- **Runtime folders:** `uploads/` stores uploaded files; vector data lives in Supabase.
 
 ## 2. Data Flow
 
@@ -133,13 +136,14 @@ erDiagram
 
 - **Adding new document types:** Extend `document_processor` to recognize additional file formats and update the database model.
 - **Switching AI providers:** The `embedding_service` and `llm_service` are thin wrappers around provider SDKs; implementing new provider clients is straightforward.
-- **Scaling:** Replace the single PostgreSQL instance with a managed cloud database; scale the backend and frontend containers in Kubernetes or another orchestrator.
+- **Scaling:** The database is already a managed cloud service (Supabase); scale the backend by running multiple Uvicorn workers behind a load balancer and serve the built frontend from a CDN or static host.
 
 ## 4. Development Workflow
 
 1. Edit code in `app/backend` or `app/frontend`.
-2. Rebuild images using `docker-compose build` (or rely on bind mounts with `docker-compose up --build` in dev mode).
-3. Run tests (if added) within the backend container or via frontend's npm scripts.
+2. Backend: restart Uvicorn (or let `--reload` pick up changes automatically).
+3. Frontend: the React dev server hot-reloads on save.
+4. Run tests (if added) with `pytest` in the venv or via the frontend's npm scripts.
 
 ---
 

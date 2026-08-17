@@ -9,22 +9,23 @@ genealogy_traceline/
 │
 ├── 📁 app/
 │   ├── 📁 backend/                          # FastAPI Backend Application
-│   │   ├── Dockerfile                       # Docker container for backend
 │   │   ├── requirements.txt                 # Python dependencies
 │   │   ├── main.py                          # FastAPI application entry point
-│   │   ├── config.py                        # Configuration & settings
+│   │   ├── config.py                        # Configuration & settings (reads .env)
 │   │   ├── database.py                      # SQLAlchemy models & setup
 │   │   ├── document_processor.py            # PDF/DOCX/TXT processing
-│   │   ├── embedding_service.py             # OpenAI embeddings integration
+│   │   ├── embedding_service.py             # Embeddings (Ollama default / OpenAI / Azure Foundry)
 │   │   ├── retrieval_service.py             # Vector similarity search
-│   │   ├── llm_service.py                   # LLM response generation
+│   │   ├── llm_service.py                   # LLM response generation (DeepSeek / Groq)
+│   │   ├── agent_service.py                 # Agentic document processing
+│   │   ├── extract_entities.py              # Standalone entity extraction script
+│   │   ├── uploads/                         # Local uploads (created at runtime)
 │   │   └── 📁 routes/
 │   │       ├── __init__.py
 │   │       ├── documents.py                 # Document management endpoints
 │   │       └── queries.py                   # Genealogical query endpoints
 │   │
 │   ├── 📁 frontend/                         # React Frontend Application
-│   │   ├── Dockerfile                       # Docker container for frontend
 │   │   ├── package.json                     # Node.js dependencies
 │   │   ├── 📁 public/
 │   │   │   └── index.html                   # HTML entry point
@@ -44,7 +45,8 @@ genealogy_traceline/
 │   │           └── FamilyTree.css
 │   │
 │   └── 📁 database/
-│       └── init.sql                         # PostgreSQL schema & setup
+│       ├── init.sql                         # SQL schema reference
+│       └── supabase_setup.sql               # Supabase PostgreSQL setup script
 │
 ├── 📁 sources/                              # Sample source documents
 │   ├── 2022_Journal_SOFAFEA.docx
@@ -52,11 +54,7 @@ genealogy_traceline/
 │
 ├── 📁 uploads/                              # User uploaded documents (created at runtime)
 │
-├── 📁 .github/                              # GitHub configuration (optional)
-│   └── workflows/
-│
-├── docker-compose.yml                       # Main Docker Compose configuration
-├── docker-compose.dev.yml                   # Development overrides
+├── 📁 venv/                                 # Python virtual environment (created locally)
 │
 ├── .env.example                             # Environment variables template
 ├── .env                                     # Environment variables (local, git-ignored)
@@ -68,10 +66,7 @@ genealogy_traceline/
 ├── PROJECT_STRUCTURE.md                     # This file
 │
 ├── api_client.py                            # Python API client helper
-├── start.sh                                 # Linux/Mac startup script
-├── start.bat                                # Windows startup script
-├── init.sh                                  # Linux/Mac initialization script
-└── init.bat                                 # Windows initialization script
+└── test_agent.py                            # Agent test helper
 ```
 
 ## Component Details
@@ -100,9 +95,9 @@ genealogy_traceline/
    - Keyword pattern matching
 
 4. **embedding_service.py** - Vector embeddings
-   - OpenAI embeddings integration
+   - OpenAI embeddings integration (default; Ollama/Azure Foundry alternates)
    - Batch embedding generation
-   - Embedding dimension: 1536
+   - Embedding dimension: 768 (Ollama, default) / 1536 (OpenAI)
 
 5. **retrieval_service.py** - Semantic search
    - Cosine similarity search using pgvector
@@ -111,7 +106,8 @@ genealogy_traceline/
    - Document filtering
 
 6. **llm_service.py** - Language model interaction
-   - GPT-4 Turbo integration
+   - DeepSeek API integration (primary; OpenAI-compatible endpoint)
+   - Groq API fallback (secondary)
    - Context-aware response generation
    - System prompt management
    - Source citation
@@ -172,7 +168,7 @@ genealogy_traceline/
 #### Document_Chunks Table
 - Vector embeddings for semantic search
 - Overlapping chunks for context
-- pgvector embeddings (1536 dims)
+- pgvector embeddings (768 dims with nomic-embed-text)
 - IVFFlat index for fast search
 
 #### Ancestry_Data Table
@@ -201,7 +197,7 @@ Service Layer:
   - retrieval_service.py (search similar)
   - llm_service.py (generate response)
        ↓
-Database (PostgreSQL + pgvector)
+Database (Supabase PostgreSQL + pgvector)
        ↓
 Response JSON
        ↓
@@ -241,11 +237,11 @@ Frontend Display
 ### Backend
 - **Framework**: FastAPI 0.104
 - **Server**: Uvicorn
-- **Database**: PostgreSQL 15 + pgvector
+- **Database**: Supabase (managed PostgreSQL) + pgvector
 - **ORM**: SQLAlchemy
-- **Embeddings**: OpenAI API
-- **Language Model**: GPT-4 Turbo
-- **Document Processing**: python-docx, PyPDF2, pytesseract
+- **Embeddings**: Ollama `nomic-embed-text` (default) / OpenAI / Azure Foundry
+- **Language Model**: DeepSeek (primary) / Groq (secondary)
+- **Document Processing**: python-docx, pypdf, pytesseract
 
 ### Frontend
 - **Library**: React 18
@@ -254,24 +250,21 @@ Frontend Display
 - **Markdown**: react-markdown
 
 ### Infrastructure
-- **Containerization**: Docker & Docker Compose
-- **Database Image**: pgvector/pgvector:pg15-latest
-- **Python Image**: python:3.11-slim
-- **Node Image**: node:18-alpine
+- **Runtime**: Python virtual environment (`venv`) + Node.js (npm) — no Docker
+- **Database**: Supabase cloud PostgreSQL with the pgvector extension
+- **Environment**: `.env` file (pydantic-settings)
 
-## Volume Mounts
+## Local Storage
 
-- `postgres_data` - PostgreSQL data persistence
-- `./uploads` - Uploaded documents storage
-- `./app/backend` - Backend code (for development)
+- `app/backend/uploads/` - Uploaded documents storage
+- `venv/` - Python virtual environment (local, git-ignored)
+- Database persistence is handled by Supabase (cloud), so no local data volume is needed.
 
 ## Network Configuration
 
-- **Network**: genealogy-network (bridge driver)
-- **Service Communication**: Internal DNS
-  - postgres:5432
-  - backend:8000
-  - frontend:3000
+- **Backend**: `http://localhost:8000`
+- **Frontend**: `http://localhost:3000` (proxies API calls to the backend via `REACT_APP_API_URL`)
+- **Supabase PostgreSQL**: remote host from `DATABASE_URL` in `.env`
 
 ## Ports
 
@@ -297,19 +290,17 @@ See `.env.example` for all available options:
 - Single replicas
 
 ### Production
-- Optimized builds
+- Optimized builds (`npm run build`)
 - Logging configured
 - HTTPS URLs
-- Multi-replica services
-- Database backups
-
-See `docker-compose.dev.yml` for development overrides.
+- Multiple Uvicorn workers behind a reverse proxy
+- Database backups (handled by Supabase)
 
 ## Configuration Files
 
 1. **config.py** - Settings management via pydantic
-2. **.env** - Runtime environment variables
-3. **docker-compose.yml** - Service orchestration
+2. **.env** - Runtime environment variables (Supabase, DeepSeek, Groq, OpenAI)
+3. **database/supabase_setup.sql** - Supabase schema, indexes, and extension setup
 4. **requirements.txt** - Python dependencies
 5. **package.json** - Node.js dependencies
 
@@ -318,7 +309,7 @@ See `docker-compose.dev.yml` for development overrides.
 - Database credentials in .env (git-ignored)
 - CORS configuration
 - File type validation
-- File size limits (50MB)
+- File size limits (configurable via `max_upload_size`, default 1000MB)
 - API authentication ready (not implemented)
 - Parameterized SQL queries
 

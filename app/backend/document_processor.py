@@ -26,6 +26,41 @@ logger = logging.getLogger(__name__)
 # Word XML namespace
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
+# Regexes used by the direct (non-LLM) entity extraction pipeline
+CAPS_NAME_RE = re.compile(r'\b(?:[A-Z]{2,}[\s“”"\'\u2019]*){2,}[A-Z]{2,}\b')
+TITLE_NAME_RE = re.compile(r'\b(?:[A-Z][a-z]{1,15}\.?\s){1,2}[A-Z][a-z]{1,15}\b')
+LOCATION_RE = re.compile(
+    r'\b(?:in|at|of|to|near)\s+'
+    r'((?:[A-Z][a-zA-Z]{1,30}\s?){0,2}'
+    r'(?:County|Parish|City|Town|Township|Island|River|Bay|Creek)'
+    r'|[A-Z][a-zA-Z\s]{2,40}?'
+    r'(?:Virginia|Carolina|Tennessee|Texas|Louisiana|Iowa|Georgia|Maryland|Delaware|Pennsylvania|Ohio|Kentucky|Mississippi|Alabama|Missouri|Kansas|England|America|Africa|Jamaica|Barbados))'
+)
+
+# Words that should never start a person-name candidate
+NAME_STOPWORDS = {
+    'after', 'african', 'africans', 'although', 'however', 'unlike', 'when',
+    'while', 'during', 'before', 'in', 'at', 'as', 'but', 'the', 'a', 'an',
+    'for', 'from', 'to', 'with', 'without', 'their', 'his', 'her', 'it',
+    'he', 'she', 'they', 'we', 'our', 'this', 'that', 'these', 'those',
+    'there', 'then', 'if', 'and', 'or', 'on', 'off', 'of', 'about', 'above',
+    'below', 'between', 'among', 'through', 'upon', 'within', 'beyond',
+    'court', 'vital', 'first', 'second', 'third', 'documenting', 'journal',
+    'volume', 'inside', 'editorial', 'products', 'further', 'introduction',
+    'abstract', 'conclusion', 'figure', 'table', 'appendix', 'chapter',
+    'section', 'part', 'new', 'north', 'south', 'east', 'west', 'old',
+    'young', 'free', 'white', 'black', 'indian', 'mulatto', 'english',
+    'american', 'native', 'accomack', 'king', 'queen', 'prince', 'princess',
+    'general', 'governor', 'captain', 'president', 'senator', 'mister',
+    'mrs', 'mr', 'dr', 'professor', 'mrs.', 'mr.', 'dr.',
+}
+
+# Words that disqualify a candidate as a person name
+NAME_LOCATION_WORDS = {
+    'county', 'parish', 'city', 'town', 'township', 'river', 'bay', 'creek',
+    'island', 'journal', 'society',
+}
+
 
 class DocumentProcessor:
     """Process various document formats and extract text and footnotes"""
@@ -321,20 +356,153 @@ class DocumentProcessor:
             'relationships': []
         }
 
-        date_pattern = r'\b(?:(?:19|20)\d{2}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[^\n]*?(?:19|20)?\d{2}\b'
-        entities['dates'] = list(set(re.findall(date_pattern, text, re.IGNORECASE)))
+        # Dates: year spans, month-name spans, day-month-year, and fuzzy years
+        date_patterns = [
+            r'\b(?:(?:19|20)\d{2}|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[^\n]*?\d{4}\b',
+            r'\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December),?\s+\d{4}\b',
+            r'\b(?:about|circa|c\.|before|after)\s+\d{4}\b',
+        ]
+        dates = set()
+        for pat in date_patterns:
+            dates.update(re.findall(pat, text, re.IGNORECASE))
+        entities['dates'] = sorted(dates)
 
+        # Relationships (keyword match)
         relationships = ['father', 'mother', 'son', 'daughter', 'brother', 'sister',
-                        'husband', 'wife', 'grandfather', 'grandmother', 'aunt', 'uncle',
-                        'cousin', 'parent', 'child', 'sibling', 'spouse', 'ancestor']
-        for rel in relationships:
-            if re.search(rf'\b{rel}\b', text, re.IGNORECASE):
-                entities['relationships'].append(rel)
+                        'husband', 'wife', 'widow', 'widower', 'grandfather', 'grandmother',
+                        'aunt', 'uncle', 'cousin', 'parent', 'child', 'sibling', 'spouse', 'ancestor']
+        entities['relationships'] = [
+            rel for rel in relationships
+            if re.search(rf'\b{rel}\b', text, re.IGNORECASE)
+        ]
 
-        occupations = ['farmer', 'doctor', 'teacher', 'merchant', 'soldier', 'laborer',
-                      'carpenter', 'blacksmith', 'nurse', 'cook', 'servant', 'clergy']
-        for occ in occupations:
-            if re.search(rf'\b{occ}', text, re.IGNORECASE):
-                entities['occupations'].append(occ)
+        # Occupations (keyword match)
+        occupations = ['farmer', 'planter', 'doctor', 'teacher', 'merchant', 'soldier',
+                       'laborer', 'carpenter', 'blacksmith', 'nurse', 'cook', 'servant',
+                       'clergy', 'minister', 'attorney', 'sheriff', 'midwife',
+                       'seamstress', 'overseer']
+        entities['occupations'] = [
+            occ for occ in occupations
+            if re.search(rf'\b{occ}', text, re.IGNORECASE)
+        ]
+
+        # Names: ALL-CAPS genealogical entries, plus Title Case names on
+        # lines/sentences that mention vital events (born, died, married...).
+        names = set()
+        sentences = re.split(r'(?<=[.;])\s+|\n+', text)
+        for sentence in sentences:
+            if not re.search(
+                r'\b(?:born|died|married|buried|son of|daughter of|wife of|husband of|child of|widow of)\b',
+                sentence, re.IGNORECASE
+            ):
+                continue
+            names.update(m.strip() for m in CAPS_NAME_RE.findall(sentence))
+            names.update(m.strip() for m in TITLE_NAME_RE.findall(sentence))
+
+        def _is_valid_name(candidate: str) -> bool:
+            candidate = candidate.strip('"“”\'’ .')
+            if len(candidate) <= 3 or any(ch.isdigit() for ch in candidate):
+                return False
+            words = [w.lower().strip('.,"“”') for w in candidate.split() if w.strip('.,"“”')]
+            if len(words) < 2:
+                return False
+            if words[0] in NAME_STOPWORDS:
+                return False
+            if any(w in NAME_LOCATION_WORDS for w in words):
+                return False
+            return True
+
+        entities['names'] = sorted({n for n in names if _is_valid_name(n)})
+
+        # Locations: place names after in/at/of/to/near, ending in
+        # County/Parish/City/Town/Township... or a known state/country.
+        entities['locations'] = sorted({
+            m.group(1).strip()
+            for m in LOCATION_RE.finditer(text)
+            if len(m.group(1).strip()) > 2
+        })
 
         return entities
+
+    @staticmethod
+    def extract_person_records(text: str, max_records: int = 100) -> List[Dict]:
+        """
+        Regex-based extraction of structured person records from text.
+        No LLM involved — used by the direct upload pipeline.
+
+        Looks for names, then scans sentences containing each name for
+        born/died years and locations, plus occupation and relationship hints.
+        """
+        entities = DocumentProcessor.extract_genealogical_entities(text)
+        names = entities['names']
+        sentences = re.split(r'(?<=[.;])\s+|\n+', text)
+
+        records = []
+        seen = set()
+        for name in names:
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            rec = {
+                'person_name': name,
+                'birth_date': None,
+                'birth_location': None,
+                'death_date': None,
+                'death_location': None,
+                'occupation': None,
+                'relation_type': None,
+                'related_to': None
+            }
+
+            for sentence in sentences:
+                if name.lower() not in sentence.lower():
+                    continue
+                lower = sentence.lower()
+
+                if 'born' in lower:
+                    born_seg = re.split(r'\bdied\b', sentence, flags=re.I)[0]
+                    after_born = born_seg.lower().split('born', 1)[1] if 'born' in born_seg.lower() else ''
+                    year = re.search(r'\b(1[5-9]\d{2})\b', after_born)
+                    if year:
+                        rec['birth_date'] = year.group(1)
+                    loc = LOCATION_RE.search(born_seg)
+                    if loc:
+                        rec['birth_location'] = loc.group(1).strip()
+
+                if 'died' in lower:
+                    after_died = re.split(r'\bdied\b', sentence, flags=re.I)[-1]
+                    year = re.search(r'\b(1[5-9]\d{2})\b', after_died)
+                    if year:
+                        rec['death_date'] = year.group(1)
+                    loc = LOCATION_RE.search(after_died)
+                    if loc:
+                        rec['death_location'] = loc.group(1).strip()
+
+                for occ in entities['occupations']:
+                    if re.search(rf'\b{occ}\b', sentence, re.I):
+                        rec['occupation'] = occ
+                        break
+
+                for rel in entities['relationships']:
+                    m = re.search(
+                        rf'\b{rel}\s+of\s+((?:[A-Z][a-zA-Z]{{1,20}}\s?){{1,3}}[A-Z][a-zA-Z]{{1,20}})',
+                        sentence, re.I
+                    )
+                    if m:
+                        rec['relation_type'] = rel
+                        related = re.sub(r'\s+(?:and|the)$', '', m.group(1).strip(), flags=re.I)
+                        related = re.sub(r'^the\s+', '', related, flags=re.I)
+                        rec['related_to'] = related.strip()
+                        break
+
+                # Enough evidence — stop scanning sentences for this person
+                if rec['birth_date'] or rec['death_date']:
+                    break
+
+            records.append(rec)
+            if len(records) >= max_records:
+                break
+
+        return records

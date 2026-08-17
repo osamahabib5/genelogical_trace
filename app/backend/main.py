@@ -4,11 +4,19 @@ Main FastAPI application for processing documents and answering genealogical que
 """
 
 import os
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+# Make app-level INFO logs (pipeline steps, embeddings, entity extraction)
+# visible in the uvicorn console.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 
 from config import settings
 from routes import documents, queries

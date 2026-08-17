@@ -3,7 +3,9 @@ API routes for document management
 """
 
 import os
+import json
 import logging
+from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -26,6 +28,150 @@ def get_db():
         db.close()
 
 
+def _store_chunks_and_footnotes(db, document_id, chunks, embeddings, chunk_footnote_map):
+    """Store embedded chunks and link extracted footnotes to their chunks."""
+    chunk_objs = []
+    for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+        chunk_obj = DocumentChunk(
+            document_id=document_id,
+            chunk_text=chunk,
+            chunk_number=i,
+            embedding=emb
+        )
+        db.add(chunk_obj)
+        chunk_objs.append(chunk_obj)
+    db.flush()
+
+    fn_count = 0
+    for chunk_idx, fn_list in (chunk_footnote_map or {}).items():
+        if chunk_idx < len(chunk_objs):
+            for fn in fn_list:
+                db.add(DocumentFootnote(
+                    document_id=document_id,
+                    chunk_id=chunk_objs[chunk_idx].id,
+                    footnote_number=str(fn.get("number", "")),
+                    footnote_text=(fn.get("text") or "")[:2000]
+                ))
+                fn_count += 1
+
+    logger.info(f"[direct:{document_id}] stored {len(chunk_objs)} chunks and {fn_count} footnotes")
+
+
+async def _process_direct(file_path: str, document: Document, db: Session):
+    """
+    Deterministic pipeline: extract -> chunk -> embed (Ollama) -> store ->
+    regex entity extraction. No LLM calls.
+    """
+    document_id = document.id
+
+    logger.info(f"[direct:{document_id}] Step 1/6: extracting text from {Path(file_path).name}")
+    full_text, chunks = DocumentProcessor.process_document(file_path)
+
+    chunk_footnote_map = {}
+    if file_path.lower().endswith(".docx"):
+        try:
+            footnotes = DocumentProcessor.extract_footnotes_from_docx(file_path)
+            clean_text, chunks, chunk_footnote_map = DocumentProcessor.build_text_and_chunk_footnote_map(
+                file_path, footnotes
+            )
+            if clean_text:
+                full_text = clean_text
+            logger.info(f"[direct:{document_id}] extracted {len(footnotes)} footnotes from DOCX")
+        except Exception as exc:
+            logger.warning(f"[direct:{document_id}] footnote extraction skipped: {exc}")
+
+    logger.info(f"[direct:{document_id}] Step 2/6: text={len(full_text)} chars, {len(chunks)} chunks")
+
+    logger.info(f"[direct:{document_id}] Step 3/6: embedding {len(chunks)} chunks via '{settings.embedding_provider}'")
+    embeddings = embedding_service.embed_texts(chunks)
+
+    logger.info(f"[direct:{document_id}] Step 4/6: storing chunks + footnotes")
+    _store_chunks_and_footnotes(db, document_id, chunks, embeddings, chunk_footnote_map)
+
+    logger.info(f"[direct:{document_id}] Step 5/6: regex entity extraction")
+    records = DocumentProcessor.extract_person_records(full_text)
+    logger.info(f"[direct:{document_id}] extracted {len(records)} person records")
+
+    stored = 0
+    for rec in records[:50]:
+        raw = json.dumps(rec)
+        emb = embedding_service.embed_text(raw)
+        db.add(AncestryData(
+            document_id=document_id,
+            person_name=rec.get("person_name"),
+            birth_date=rec.get("birth_date"),
+            birth_location=rec.get("birth_location"),
+            death_date=rec.get("death_date"),
+            death_location=rec.get("death_location"),
+            occupation=rec.get("occupation"),
+            relation_type=rec.get("relation_type"),
+            related_to=rec.get("related_to"),
+            raw_text=raw,
+            embedding=emb
+        ))
+        stored += 1
+
+    document.content = full_text[:1000000]
+    document.doc_metadata.update({
+        "status": "completed",
+        "processing_method": "direct_pipeline",
+        "chunk_count": len(chunks),
+        "footnote_count": sum(len(v) for v in chunk_footnote_map.values()),
+        "person_records": stored,
+    })
+    db.commit()
+    logger.info(f"[direct:{document_id}] Step 6/6: done — {stored} ancestry records stored")
+
+    return {
+        "success": True,
+        "document_id": document_id,
+        "filename": document.file_name,
+        "title": document.title,
+        "document_type": document.document_type,
+        "processing_method": "direct_pipeline",
+        "chunks": len(chunks),
+        "person_records": stored,
+        "message": "Document uploaded and processed via direct pipeline (regex + Ollama embeddings)"
+    }
+
+
+async def _process_with_agent(file_path: str, document: Document, db: Session):
+    """Optional DeepSeek-powered agentic cleaning (USE_AGENT_PROCESSING=true)."""
+    from agent_service import genealogy_agent  # lazy import: only for agent mode
+
+    document_id = document.id
+    logger.info(f"Starting agent processing for document {document_id}")
+    agent_result = await genealogy_agent.process_document(file_path, document_id)
+
+    if not agent_result["success"]:
+        document.doc_metadata["status"] = "failed"
+        document.doc_metadata["agent_error"] = agent_result.get("error", "Unknown error")
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Agent processing failed: {agent_result.get('error', 'Unknown error')}"
+        )
+
+    document.doc_metadata.update({
+        "status": "completed",
+        "agent_output": agent_result.get("agent_output", ""),
+        "processed_content_preview": agent_result.get("processed_content", ""),
+    })
+    db.commit()
+    logger.info(f"Agent processing completed for document {document_id}")
+
+    return {
+        "success": True,
+        "document_id": document_id,
+        "filename": document.file_name,
+        "title": document.title,
+        "document_type": document.document_type,
+        "processing_method": "agentic_ai",
+        "agent_status": "completed",
+        "message": "Document uploaded and processed by AI agent successfully"
+    }
+
+
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
@@ -33,13 +179,12 @@ async def upload_document(
     db: Session = Depends(get_db)
 ):
     """
-    Upload a document. Embeddings are generated in batches for speed.
-    For DOCX files, footnotes are extracted and linked to chunks.
+    Upload a document.
+
+    Default: direct pipeline (regex entities + Ollama embeddings, no LLM calls).
+    Set USE_AGENT_PROCESSING=true in .env for the DeepSeek agent instead.
     """
     try:
-        azure_db = None
-        if AzureSessionLocal:
-            azure_db = AzureSessionLocal()
         file_ext = os.path.splitext(file.filename)[1].lower()
         if file_ext not in {'.pdf', '.docx', '.txt', '.json'}:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
@@ -57,180 +202,28 @@ async def upload_document(
             os.remove(file_path)
             raise HTTPException(status_code=413, detail="File too large")
 
-        # ── Extract text, chunks, and footnotes ──
-        if file_ext == '.docx':
-            footnotes = DocumentProcessor.extract_footnotes_from_docx(file_path)
-            logger.info(f"Extracted {len(footnotes)} footnotes")
-            full_text, chunks, chunk_footnote_map = \
-                DocumentProcessor.build_text_and_chunk_footnote_map(file_path, footnotes)
-        else:
-            try:
-                full_text, chunks = DocumentProcessor.process_document(file_path)
-            except Exception as e:
-                os.remove(file_path)
-                raise HTTPException(status_code=400, detail=f"Error processing file: {str(e)}")
-            footnotes = {}
-            chunk_footnote_map = {}
-
-        logger.info(f"Extracted {len(chunks)} chunks from {file.filename}")
-
         # ── Create document record ──
+        processing_method = "agentic_ai" if settings.use_agent_processing else "direct_pipeline"
         document = Document(
             title=file.filename,
             document_type=document_type.lower(),
             file_name=unique_filename,
-            content=full_text[:10000],
+            content=f"Processing ({processing_method})... Original file: {file.filename}",
             doc_metadata={
                 "original_filename": file.filename,
                 "file_size": len(content),
-                "chunk_count": len(chunks),
-                "footnote_count": len(footnotes)
+                "processing_method": processing_method,
+                "status": "processing"
             }
         )
         db.add(document)
         db.flush()
         document_id = document.id
-        logger.info(f"Created document record ID={document_id}")
+        logger.info(f"Created document record ID={document_id} ({processing_method})")
 
-        if azure_db:
-            azure_document = Document(
-                title=document.title,
-                document_type=document.document_type,
-                file_name=document.file_name,
-                content=document.content,
-                doc_metadata=document.doc_metadata
-            )
-            azure_db.add(azure_document)
-            azure_db.flush()
-            azure_document_id = azure_document.id
-            logger.info(f"Created Azure document record ID={azure_document_id}")
-
-        # ── Save all footnotes ──
-        footnote_objects = {}
-        azure_footnote_objects = {}
-        for fn_number, fn_text in footnotes.items():
-            fn_obj = DocumentFootnote(
-                document_id=document_id,
-                footnote_number=fn_number,
-                footnote_text=fn_text,
-                chunk_id=None
-            )
-            db.add(fn_obj)
-            footnote_objects[fn_number] = fn_obj
-            if azure_db:
-                azure_fn_obj = DocumentFootnote(
-                    document_id=azure_document_id,
-                    footnote_number=fn_number,
-                    footnote_text=fn_text,
-                    chunk_id=None
-                )
-                azure_db.add(azure_fn_obj)
-                azure_footnote_objects[fn_number] = azure_fn_obj
-        db.flush()
-        if azure_db:
-            azure_db.flush()
-
-        # ── Generate ALL embeddings in batches ──
-        logger.info(f"Generating embeddings for {len(chunks)} chunks in batches...")
-        embeddings = embedding_service.embed_texts(chunks, batch_size=32)
-        logger.info(f"Embeddings generated — {len(embeddings)} total")
-
-        # ── Save chunks with embeddings ──
-        success_count = 0
-        error_count = 0
-
-        for idx, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
-            try:
-                # Skip zero-vector embeddings (failed batches)
-                if all(v == 0.0 for v in embedding[:10]):
-                    error_count += 1
-                    continue
-
-                doc_chunk = DocumentChunk(
-                    document_id=document_id,
-                    chunk_text=chunk_text,
-                    chunk_number=idx,
-                    embedding=embedding
-                )
-                db.add(doc_chunk)
-                if azure_db:
-                    azure_doc_chunk = DocumentChunk(
-                        document_id=azure_document_id,
-                        chunk_text=chunk_text,
-                        chunk_number=idx,
-                        embedding=embedding
-                    )
-                    azure_db.add(azure_doc_chunk)
-                db.flush()
-                if azure_db:
-                    azure_db.flush()
-
-                # Link footnotes to this chunk
-                if idx in chunk_footnote_map:
-                    for fn_ref in chunk_footnote_map[idx]:
-                        fn_num = fn_ref["number"]
-                        if fn_num in footnote_objects:
-                            footnote_objects[fn_num].chunk_id = doc_chunk.id
-                            if azure_db and fn_num in azure_footnote_objects:
-                                azure_footnote_objects[fn_num].chunk_id = azure_doc_chunk.id
-
-                success_count += 1
-
-                if idx % 100 == 0:
-                    db.flush()
-                    logger.info(f"Saved {idx}/{len(chunks)} chunks...")
-
-            except Exception as e:
-                logger.error(f"Error saving chunk {idx}: {e}")
-                error_count += 1
-                continue
-
-        # ── Extract genealogical entities ──
-        try:
-            entities = DocumentProcessor.extract_genealogical_entities(full_text)
-            full_embedding = embedding_service.embed_text(full_text[:1000])
-            for person_name in entities.get('names', [])[:10]:
-                ancestry_record = AncestryData(
-                    document_id=document_id,
-                    person_name=person_name,
-                    raw_text=full_text[:500],
-                    embedding=full_embedding
-                )
-                db.add(ancestry_record)
-                if azure_db:
-                    azure_ancestry = AncestryData(
-                        document_id=azure_document_id,
-                        person_name=person_name,
-                        raw_text=full_text[:500],
-                        embedding=full_embedding
-                    )
-                    azure_db.add(azure_ancestry)
-        except Exception as e:
-            logger.warning(f"Entity extraction failed (non-critical): {e}")
-
-        db.commit()
-        if azure_db:
-            azure_db.commit()
-            azure_db.close()
-        logger.info(
-            f"Document {document_id} fully processed. "
-            f"Chunks: {success_count} success, {error_count} errors. "
-            f"Footnotes: {len(footnotes)} extracted, "
-            f"{len(chunk_footnote_map)} chunks linked."
-        )
-
-        return {
-            "success": True,
-            "document_id": document_id,
-            "filename": unique_filename,
-            "title": file.filename,
-            "document_type": document_type,
-            "chunks": success_count,
-            "embedding_errors": error_count,
-            "footnotes_extracted": len(footnotes),
-            "footnotes_linked_to_chunks": len(chunk_footnote_map),
-            "message": "Document uploaded successfully with batch embeddings"
-        }
+        if settings.use_agent_processing:
+            return await _process_with_agent(file_path, document, db)
+        return await _process_direct(file_path, document, db)
 
     except HTTPException:
         raise

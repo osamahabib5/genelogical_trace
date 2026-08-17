@@ -3,32 +3,39 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Database
-    # This will be overridden by AZURE_POSTGRES_CONNECTION_STRING in Azure
-    database_url: str = "postgresql://genealogy_user:genealogy_password@postgres:5432/genealogy_db"
+    # Set DATABASE_URL in .env to your Supabase connection string
+    # (Supabase Dashboard → Project Settings → Database → Connection string)
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/postgres"
 
     # Azure Database (for dual writing)
     azure_postgres_connection_string: str = ""
 
     # File upload
-    upload_directory: str = "/app/uploads"
+    upload_directory: str = "uploads"
     max_upload_size: int = 1000 * 1024 * 1024  # 1000MB
 
     # CORS
     allowed_origins: str = ""
 
-    ## LLM Provider — "ollama", "openai", "groq", or "azure-foundry"
-    llm_provider: str = "groq"
+    ## LLM Provider — "deepseek" (primary), "groq" (secondary),
+    # "openai", "ollama", or "azure-foundry"
+    llm_provider: str = "deepseek"
+
+    # DeepSeek (primary)
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-v4-pro"
+    deepseek_base_url: str = "https://api.deepseek.com"
 
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
-    # Groq
+    # Groq (secondary)
     groq_api_key: str = ""
     groq_model: str = "llama-3.1-8b-instant"
 
     # Ollama
-    ollama_base_url: str = "http://ollama:11434"
+    ollama_base_url: str = "http://localhost:11434"
     ollama_chat_model: str = "llama3.2:1b"
     ollama_embed_model: str = "nomic-embed-text"
 
@@ -41,22 +48,32 @@ class Settings(BaseSettings):
     azure_foundry_chat_model: str = ""
     azure_foundry_embed_model: str = "text-embedding-3-small"
 
+    # Embeddings provider — "ollama" (default), "openai", or "azure-foundry".
+    # DeepSeek and Groq do not provide embedding endpoints.
+    embedding_provider: str = "ollama"
+    openai_embedding_model: str = "text-embedding-3-small"
+
     # Embeddings dimension
-    embedding_dimension: int = 1536
+    embedding_dimension: int = 768
 
     # Generation settings
     temperature: float = 0.1
     max_tokens: int = 300
     max_results: int = 8
 
+    # Document processing pipeline.
+    # False = direct regex + Ollama embeddings (fast, no LLM calls on upload).
+    # True  = DeepSeek-powered agentic cleaning (slower, more thorough).
+    use_agent_processing: bool = False
+
     def __init__(self, **data):
         super().__init__(**data)
         
-        # Set embedding dimension based on provider
+        # Set embedding dimension based on the embeddings provider
         # Note: If using Azure Foundry for embeddings, ensure it matches your deployment
-        if self.llm_provider in ["openai", "azure-foundry"]:
+        if self.embedding_provider in ["openai", "azure-foundry"]:
             self.embedding_dimension = 1536
-        else:  # groq or ollama
+        else:  # ollama
             self.embedding_dimension = 768
 
     model_config = {

@@ -14,7 +14,10 @@ import FamilyTree from './components/FamilyTree';
 // );
 
 // This tells the browser: "Look for /api on the same server that served this HTML"
-const API_URL = process.env.REACT_APP_API_URL || '/api';
+// If REACT_APP_API_URL is set (e.g. http://localhost:8000), /api is appended automatically.
+const API_URL = process.env.REACT_APP_API_URL
+  ? `${process.env.REACT_APP_API_URL.replace(/\/+$/, '')}/api`
+  : '/api';
 
 console.log('API_URL configured as:', API_URL);
 

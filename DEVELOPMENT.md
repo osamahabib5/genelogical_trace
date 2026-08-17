@@ -12,16 +12,16 @@
    pip install -r requirements.txt
    ```
 
-2. **Run backend locally (without Docker):**
+2. **Configure the database:**
+   - Create a [Supabase](https://supabase.com/) project and copy its connection string (Session pooler, port `5432`) into `.env` as `DATABASE_URL`.
+   - Enable the pgvector extension and run `database/supabase_setup.sql` once in the Supabase SQL Editor.
+
+3. **Run backend locally:**
    ```bash
-   # Make sure PostgreSQL is running (via docker-compose)
-   docker-compose up -d postgres
-   
-   # Start backend
    uvicorn main:app --reload
    ```
 
-3. **Test API:**
+4. **Test API:**
    ```bash
    curl http://localhost:8000/health
    curl http://localhost:8000/docs  # Swagger UI
@@ -113,8 +113,11 @@ curl -X POST -H "Content-Type: application/json" \
 ## Database Queries for Testing
 
 ### Connect to Database
+
+Use the **Supabase SQL Editor** (Dashboard → SQL Editor), or connect with `psql` using your connection string:
+
 ```bash
-docker-compose exec postgres psql -U genealogy_user -d genealogy_db
+psql "postgresql://postgres.<PROJECT_REF>:<DB_PASSWORD>@aws-0-<REGION>.pooler.supabase.com:5432/postgres"
 ```
 
 ### Useful Queries
@@ -140,48 +143,42 @@ WHERE person_name ILIKE '%Smith%';
 
 ### Production Checklist
 
-- [ ] Change default PostgreSQL credentials
-- [ ] Set strong OpenAI API key
+- [ ] Use a strong Supabase database password (and rotate it)
+- [ ] Set strong DeepSeek/Groq/OpenAI API keys
 - [ ] Update CORS origins
 - [ ] Enable HTTPS
 - [ ] Set up monitoring and logging
-- [ ] Configure database backups
+- [ ] Configure database backups (Supabase handles these by default)
 - [ ] Optimize vector indexes
-- [ ] Scale to multiple backend replicas
+- [ ] Scale to multiple Uvicorn workers
 
 ### Environment Variables for Production
 
 ```env
-DATABASE_URL=postgresql://prod_user:strong_password@db.example.com:5432/genealogy_prod
-OPENAI_API_KEY=sk-prod-key-here
+DATABASE_URL=postgresql://postgres.<PROJECT_REF>:<DB_PASSWORD>@aws-0-<REGION>.pooler.supabase.com:5432/postgres
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-prod-key-here
+DEEPSEEK_MODEL=deepseek-v4-pro
+GROQ_API_KEY=your-groq-api-key
+EMBEDDING_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_EMBED_MODEL=nomic-embed-text
 ALLOWED_ORIGINS=https://yourdomain.com
 ENVIRONMENT=production
 LOG_LEVEL=INFO
 ```
 
-### Docker Compose Override for Production
+### Production Deployment (venv)
 
-Create `docker-compose.prod.yml`:
+No Docker is required. To run in production:
 
-```yaml
-version: '3.8'
-services:
-  backend:
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      LOG_LEVEL: INFO
-    deploy:
-      replicas: 3
-      
-  frontend:
-    restart: unless-stopped
-    
-  postgres:
-    restart: unless-stopped
-    volumes:
-      - postgres_data_prod:/var/lib/postgresql/data
-```
+1. Build the frontend: `cd app/frontend && npm run build` and serve `build/` with a static host (Nginx, CDN, etc.).
+2. Run the backend with multiple workers behind a reverse proxy:
+   ```bash
+   cd app/backend
+   uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+   ```
+3. Keep the Supabase database connection in `DATABASE_URL` and rotate the database password regularly.
 
 ## Performance Optimization
 
@@ -242,7 +239,7 @@ engine = create_engine(DB_URL, echo=True)  # Log all SQL queries
 # Verify embedding service
 embedding_service = EmbeddingService()
 test_embedding = embedding_service.embed_text("test")
-print(len(test_embedding))  # Should be 1536
+print(len(test_embedding))  # 768 for Ollama (default), 1536 for OpenAI
 ```
 
 ### Monitor API Performance
@@ -255,7 +252,7 @@ curl -w "@curl-format.txt" -o /dev/null -s http://localhost:8000/health
 ## Common Issues and Solutions
 
 ### Issue: "Vector dimension mismatch"
-**Solution:** Ensure `embedding_dimension` in config.py matches OpenAI model output (should be 1536)
+**Solution:** Ensure `embedding_dimension` in `config.py` matches the embedding provider (768 for Ollama, 1536 for OpenAI) and that the `vector(...)` column types in Supabase match.
 
 ### Issue: "Connection pool exhausted"
 **Solution:** Increase `pool_size` in `create_engine()` call
