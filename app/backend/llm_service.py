@@ -4,7 +4,7 @@ LLM service - supports DeepSeek, OpenAI, Groq, Ollama, and Azure Foundry
 
 import logging
 import requests
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional, Tuple
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,21 @@ class LLMService:
         context: List[Dict],
         system_prompt: Optional[str] = None
     ) -> str:
+        """Generate a response, discarding token usage metadata."""
+        content, _ = self.generate_response_with_usage(query, context, system_prompt)
+        return content
+
+    def generate_response_with_usage(
+        self,
+        query: str,
+        context: List[Dict],
+        system_prompt: Optional[str] = None
+    ) -> Tuple[str, Dict[str, int]]:
+        """Generate a response and return (content, token_usage).
+
+        `token_usage` contains prompt_tokens / completion_tokens / total_tokens
+        when the provider reports usage; otherwise it is an empty dict.
+        """
         if not system_prompt:
             system_prompt = self._get_default_system_prompt()
 
@@ -40,9 +55,20 @@ class LLMService:
                 return self._call_ollama(system_prompt, user_message)
         except Exception as e:
             logger.error(f"Error generating response: {e}")
-            return f"Error generating response: {str(e)}"
+            return f"Error generating response: {str(e)}", {}
 
-    def _call_groq(self, system_prompt: str, user_message: str) -> str:
+    def get_active_model_name(self) -> str:
+        """Name of the chat model currently in use (for pricing lookup)."""
+        model_by_provider = {
+            "openai": settings.openai_model,
+            "deepseek": settings.deepseek_model,
+            "groq": settings.groq_model,
+            "azure-foundry": settings.azure_foundry_chat_model,
+            "ollama": settings.ollama_chat_model,
+        }
+        return model_by_provider.get(self.provider, "")
+
+    def _call_groq(self, system_prompt: str, user_message: str) -> Tuple[str, Dict[str, int]]:
         """Call Groq API — fast LLaMA inference, free tier available."""
         try:
             from groq import Groq
@@ -62,9 +88,9 @@ class LLMService:
             max_tokens=settings.max_tokens,
             temperature=settings.temperature
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content, self._usage_from_openai_response(response)
 
-    def _call_ollama(self, system_prompt: str, user_message: str) -> str:
+    def _call_ollama(self, system_prompt: str, user_message: str) -> Tuple[str, Dict[str, int]]:
         response = requests.post(
             f"{settings.ollama_base_url}/api/chat",
             json={
@@ -82,30 +108,61 @@ class LLMService:
             timeout=300
         )
         response.raise_for_status()
-        return response.json()["message"]["content"]
+        data = response.json()
+        prompt_tokens = data.get("prompt_eval_count") or 0
+        completion_tokens = data.get("eval_count") or 0
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
+        return data["message"]["content"], usage
 
-    def _call_deepseek(self, system_prompt: str, user_message: str) -> str:
+    def _call_deepseek(self, system_prompt: str, user_message: str) -> Tuple[str, Dict[str, int]]:
         """Call the DeepSeek API (OpenAI-compatible)."""
         from openai import OpenAI
         client = OpenAI(
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url
         )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+
+        # In DeepSeek "thinking" mode, reasoning tokens count toward max_tokens.
+        # Reserve enough budget so the final answer is not truncated to an
+        # empty content (which previously caused source-only responses).
         response = client.chat.completions.create(
             model=settings.deepseek_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
+            messages=messages,
             stream=False,
             reasoning_effort="high",
             extra_body={"thinking": {"type": "enabled"}},
             temperature=settings.temperature,
-            max_tokens=settings.max_tokens
+            max_tokens=max(settings.max_tokens, 4096)
         )
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
 
-    def _call_openai(self, system_prompt: str, user_message: str) -> str:
+        # Fallback: if the thinking phase still consumed the whole budget,
+        # retry with plain (non-thinking) completion so an answer is produced.
+        if not content:
+            logger.warning(
+                "DeepSeek returned empty content (thinking consumed the token "
+                "budget); retrying without thinking mode"
+            )
+            response = client.chat.completions.create(
+                model=settings.deepseek_model,
+                messages=messages,
+                stream=False,
+                temperature=settings.temperature,
+                max_tokens=settings.max_tokens
+            )
+            content = response.choices[0].message.content
+
+        return content or "", self._usage_from_openai_response(response)
+
+    def _call_openai(self, system_prompt: str, user_message: str) -> Tuple[str, Dict[str, int]]:
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key)
         response = client.chat.completions.create(
@@ -117,9 +174,9 @@ class LLMService:
             temperature=settings.temperature,
             max_tokens=settings.max_tokens
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content, self._usage_from_openai_response(response)
 
-    def _call_azure_foundry(self, system_prompt: str, user_message: str) -> str:
+    def _call_azure_foundry(self, system_prompt: str, user_message: str) -> Tuple[str, Dict[str, int]]:
         """Call Azure Foundry AI Hub endpoint."""
         from openai import OpenAI
 
@@ -139,7 +196,25 @@ class LLMService:
             temperature=settings.temperature,
             max_tokens=settings.max_tokens
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content, self._usage_from_openai_response(response)
+
+    @staticmethod
+    def _usage_from_openai_response(response: Any) -> Dict[str, int]:
+        """Extract token usage from an OpenAI-compatible completion response.
+
+        Includes DeepSeek prompt-cache fields (reported when prompt caching
+        is enabled) so cost can be split into cache hit / cache miss.
+        """
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return {}
+        return {
+            "prompt_tokens": getattr(usage, "prompt_tokens", None) or 0,
+            "completion_tokens": getattr(usage, "completion_tokens", None) or 0,
+            "total_tokens": getattr(usage, "total_tokens", None) or 0,
+            "prompt_cache_hit_tokens": getattr(usage, "prompt_cache_hit_tokens", None) or 0,
+            "prompt_cache_miss_tokens": getattr(usage, "prompt_cache_miss_tokens", None) or 0,
+        }
 
     @staticmethod
     def _get_default_system_prompt() -> str:

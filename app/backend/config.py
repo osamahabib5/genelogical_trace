@@ -56,9 +56,11 @@ class Settings(BaseSettings):
     # Embeddings dimension
     embedding_dimension: int = 768
 
-    # Generation settings
+    # Generation settings.
+    # Keep max_tokens generous: DeepSeek "thinking" mode counts reasoning
+    # tokens toward this budget, so a small limit yields empty answers.
     temperature: float = 0.1
-    max_tokens: int = 300
+    max_tokens: int = 1500
     max_results: int = 8
 
     # Document processing pipeline.

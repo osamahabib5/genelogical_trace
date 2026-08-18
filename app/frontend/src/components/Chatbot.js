@@ -38,9 +38,12 @@ function Chatbot({ apiUrl }) {
         { timeout: 300000 }
       );
 
+      const responseText = (response.data.response || '').trim();
       const botMessage = {
         id: messages.length + 2,
-        text: response.data.response,
+        text:
+          responseText ||
+          "I couldn't generate an answer from the retrieved sources. Please try rephrasing your question.",
         sender: 'bot',
         timestamp: new Date(),
         sources: response.data.sources,

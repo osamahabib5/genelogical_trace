@@ -11,9 +11,11 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 from database import SessionLocal, QueryHistory, AzureSessionLocal
+from config import settings
 from embedding_service import embedding_service
 from retrieval_service import RetrievalService
 from llm_service import llm_service
+from rag_logging import rag_event_context, step_timer, estimate_llm_cost, deepseek_pricing_rate
 from document_processor import DocumentProcessor
 
 logger = logging.getLogger(__name__)
@@ -80,22 +82,35 @@ async def search_ancestry(
     include_ancestry_data = request.include_ancestry_data
 
     try:
-        query_embedding = embedding_service.embed_text(query)
-        keyword = extract_keywords(query)
+        with rag_event_context("query", query_text=query) as event:
+            with step_timer(event, "embed query"):
+                query_embedding = embedding_service.embed_text(query)
+            event["api_calls_made"].append(f"embedding ({settings.embedding_provider})")
 
-        results = {
-            "query": query,
-            "document_chunks": [],
-            "ancestry_records": [],
-            "entities": {}
-        }
-        if include_documents:
-            results["document_chunks"] = RetrievalService.search_similar_chunks(
-                db, query_embedding, keyword=keyword
+            with step_timer(event, "keyword extraction"):
+                keyword = extract_keywords(query)
+
+            results = {
+                "query": query,
+                "document_chunks": [],
+                "ancestry_records": [],
+                "entities": {}
+            }
+            with step_timer(event, "vector retrieval"):
+                if include_documents:
+                    results["document_chunks"] = RetrievalService.search_similar_chunks(
+                        db, query_embedding, keyword=keyword
+                    )
+                    event["tools_called"].append("RetrievalService.search_similar_chunks")
+                if include_ancestry_data:
+                    results["ancestry_records"] = RetrievalService.search_ancestry_data(db, query_embedding)
+                    event["tools_called"].append("RetrievalService.search_ancestry_data")
+            with step_timer(event, "entity extraction"):
+                results["entities"] = DocumentProcessor.extract_genealogical_entities(query)
+            event["final_response"] = (
+                f"Search returned {len(results['document_chunks'])} chunks and "
+                f"{len(results['ancestry_records'])} ancestry records"
             )
-        if include_ancestry_data:
-            results["ancestry_records"] = RetrievalService.search_ancestry_data(db, query_embedding)
-        results["entities"] = DocumentProcessor.extract_genealogical_entities(query)
 
         try:
             db.add(QueryHistory(query_text=query, results=results))
@@ -132,24 +147,56 @@ async def ask_chatbot(
         start_time = time.time()
         context = []
 
-        query_embedding = embedding_service.embed_text(query)
+        with rag_event_context("query", query_text=query) as event:
+            with step_timer(event, "embed query"):
+                query_embedding = embedding_service.embed_text(query)
+            event["api_calls_made"].append(f"embedding ({settings.embedding_provider})")
 
-        # Extract keywords from query for smarter retrieval
-        keyword = extract_keywords(query)
-        logger.info(f"Query: '{query}' | Keyword extracted: '{keyword}'")
+            # Extract keywords from query for smarter retrieval
+            with step_timer(event, "keyword extraction"):
+                keyword = extract_keywords(query)
+            logger.info(f"Query: '{query}' | Keyword extracted: '{keyword}'")
 
-        if include_context:
-            document_chunks = RetrievalService.search_similar_chunks(
-                db, query_embedding, top_k=8, keyword=keyword
+            if include_context:
+                with step_timer(event, "vector retrieval"):
+                    document_chunks = RetrievalService.search_similar_chunks(
+                        db, query_embedding, top_k=8, keyword=keyword
+                    )
+                    ancestry_records = RetrievalService.search_ancestry_data(
+                        db, query_embedding, top_k=5
+                    )
+                event["tools_called"].extend([
+                    "RetrievalService.search_similar_chunks",
+                    "RetrievalService.search_ancestry_data",
+                ])
+                with step_timer(event, "context assembly"):
+                    context.extend(document_chunks)
+                    context.extend(ancestry_records)
+
+            logger.info(f"Total context sources: {len(context)}")
+
+            with step_timer(event, "llm answer generation") as llm_step:
+                response, usage = llm_service.generate_response_with_usage(query, context)
+            event["response_time_seconds"] = llm_step["seconds"]
+            event["api_calls_made"].append(f"llm ({settings.llm_provider})")
+            event["final_response"] = response
+            event["input_tokens"] = (usage or {}).get("prompt_tokens")
+            event["output_tokens"] = (usage or {}).get("completion_tokens")
+            event["input_cache_hit_tokens"] = (usage or {}).get("prompt_cache_hit_tokens")
+            event["input_cache_miss_tokens"] = (usage or {}).get("prompt_cache_miss_tokens")
+            event["pricing_rate"] = (
+                deepseek_pricing_rate()
+                if settings.llm_provider == "deepseek"
+                else "flat"
             )
-            ancestry_records = RetrievalService.search_ancestry_data(
-                db, query_embedding, top_k=5
+            event["estimated_cost_usd"] = estimate_llm_cost(
+                provider=settings.llm_provider,
+                model=llm_service.get_active_model_name(),
+                input_tokens=event["input_tokens"],
+                output_tokens=event["output_tokens"],
+                input_cache_hit_tokens=event["input_cache_hit_tokens"],
+                input_cache_miss_tokens=event["input_cache_miss_tokens"],
             )
-            context.extend(document_chunks)
-            context.extend(ancestry_records)
-
-        logger.info(f"Total context sources: {len(context)}")
-        response = llm_service.generate_response(query, context)
 
         elapsed = round(time.time() - start_time, 2)
         logger.info(f"Query answered in {elapsed}s")

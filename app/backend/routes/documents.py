@@ -15,6 +15,7 @@ from database import SessionLocal, Document, DocumentChunk, AncestryData, Docume
 from document_processor import DocumentProcessor
 from embedding_service import embedding_service
 from config import settings
+from rag_logging import rag_event_context, log_rag_event
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -185,45 +186,58 @@ async def upload_document(
     Set USE_AGENT_PROCESSING=true in .env for the DeepSeek agent instead.
     """
     try:
-        file_ext = os.path.splitext(file.filename)[1].lower()
-        if file_ext not in {'.pdf', '.docx', '.txt', '.json'}:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
+        with rag_event_context("file_upload", file_name=file.filename) as event:
+            file_ext = os.path.splitext(file.filename)[1].lower()
+            if file_ext not in {'.pdf', '.docx', '.txt', '.json'}:
+                raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
 
-        os.makedirs(settings.upload_directory, exist_ok=True)
+            os.makedirs(settings.upload_directory, exist_ok=True)
 
-        unique_filename = f"{uuid.uuid4()}_{file.filename}"
-        file_path = os.path.join(settings.upload_directory, unique_filename)
+            unique_filename = f"{uuid.uuid4()}_{file.filename}"
+            file_path = os.path.join(settings.upload_directory, unique_filename)
 
-        with open(file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+            with open(file_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
+            event["steps_taken"].append("save file to disk")
 
-        if len(content) > settings.max_upload_size:
-            os.remove(file_path)
-            raise HTTPException(status_code=413, detail="File too large")
+            if len(content) > settings.max_upload_size:
+                os.remove(file_path)
+                raise HTTPException(status_code=413, detail="File too large")
 
-        # ── Create document record ──
-        processing_method = "agentic_ai" if settings.use_agent_processing else "direct_pipeline"
-        document = Document(
-            title=file.filename,
-            document_type=document_type.lower(),
-            file_name=unique_filename,
-            content=f"Processing ({processing_method})... Original file: {file.filename}",
-            doc_metadata={
-                "original_filename": file.filename,
-                "file_size": len(content),
-                "processing_method": processing_method,
-                "status": "processing"
-            }
-        )
-        db.add(document)
-        db.flush()
-        document_id = document.id
-        logger.info(f"Created document record ID={document_id} ({processing_method})")
+            # ── Create document record ──
+            processing_method = "agentic_ai" if settings.use_agent_processing else "direct_pipeline"
+            document = Document(
+                title=file.filename,
+                document_type=document_type.lower(),
+                file_name=unique_filename,
+                content=f"Processing ({processing_method})... Original file: {file.filename}",
+                doc_metadata={
+                    "original_filename": file.filename,
+                    "file_size": len(content),
+                    "processing_method": processing_method,
+                    "status": "processing"
+                }
+            )
+            db.add(document)
+            db.flush()
+            document_id = document.id
+            logger.info(f"Created document record ID={document_id} ({processing_method})")
+            event["steps_taken"].append("create document record")
 
-        if settings.use_agent_processing:
-            return await _process_with_agent(file_path, document, db)
-        return await _process_direct(file_path, document, db)
+            if settings.use_agent_processing:
+                result = await _process_with_agent(file_path, document, db)
+                event["tools_called"].append("GenealogyAgent.process_document")
+            else:
+                result = await _process_direct(file_path, document, db)
+                event["tools_called"].extend([
+                    "DocumentProcessor.process_document",
+                    "embedding_service.embed_texts",
+                    "DocumentProcessor.extract_person_records",
+                ])
+            event["api_calls_made"].append(f"embedding ({settings.embedding_provider})")
+            event["final_response"] = result.get("message", "upload processed")
+            return result
 
     except HTTPException:
         raise
@@ -272,6 +286,11 @@ async def get_document(document_id: int, db: Session = Depends(get_db)):
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
+        log_rag_event(
+            "file_view",
+            file_name=document.file_name,
+            final_response=f"Viewed document {document_id}: {document.title}"
+        )
         return {
             "id": document.id,
             "title": document.title,
@@ -321,6 +340,11 @@ async def delete_document(document_id: int, db: Session = Depends(get_db)):
             os.remove(file_path)
         db.delete(document)
         db.commit()
+        log_rag_event(
+            "file_delete",
+            file_name=document.file_name,
+            final_response=f"Deleted document {document_id}"
+        )
         return {"success": True, "message": "Document deleted successfully"}
     except HTTPException:
         raise
