@@ -170,30 +170,36 @@ async def ask_chatbot(
         context = []
 
         with rag_event_context("query", query_text=query) as event:
-            with step_timer(event, "embed query"):
-                query_embedding = embedding_service.embed_text(query)
-            event["api_calls_made"].append(f"embedding ({settings.embedding_provider})")
+            if is_small_talk(query):
+                # Chit-chat: skip embedding + retrieval entirely. No context
+                # is fed to the LLM and no sources are shown for greetings.
+                with step_timer(event, "skip embedding + retrieval (small talk)"):
+                    pass
+            else:
+                with step_timer(event, "embed query"):
+                    query_embedding = embedding_service.embed_text(query)
+                event["api_calls_made"].append(f"embedding ({settings.embedding_provider})")
 
-            # Extract keywords from query for smarter retrieval
-            with step_timer(event, "keyword extraction"):
-                keyword = extract_keywords(query)
-            logger.info(f"Query: '{query}' | Keyword extracted: '{keyword}'")
+                # Extract keywords from query for smarter retrieval
+                with step_timer(event, "keyword extraction"):
+                    keyword = extract_keywords(query)
+                logger.info(f"Query: '{query}' | Keyword extracted: '{keyword}'")
 
-            if include_context:
-                with step_timer(event, "vector retrieval"):
-                    document_chunks = RetrievalService.search_similar_chunks(
-                        db, query_embedding, top_k=8, keyword=keyword
-                    )
-                    ancestry_records = RetrievalService.search_ancestry_data(
-                        db, query_embedding, top_k=5
-                    )
-                event["tools_called"].extend([
-                    "RetrievalService.search_similar_chunks",
-                    "RetrievalService.search_ancestry_data",
-                ])
-                with step_timer(event, "context assembly"):
-                    context.extend(document_chunks)
-                    context.extend(ancestry_records)
+                if include_context:
+                    with step_timer(event, "vector retrieval"):
+                        document_chunks = RetrievalService.search_similar_chunks(
+                            db, query_embedding, top_k=8, keyword=keyword
+                        )
+                        ancestry_records = RetrievalService.search_ancestry_data(
+                            db, query_embedding, top_k=5
+                        )
+                    event["tools_called"].extend([
+                        "RetrievalService.search_similar_chunks",
+                        "RetrievalService.search_ancestry_data",
+                    ])
+                    with step_timer(event, "context assembly"):
+                        context.extend(document_chunks)
+                        context.extend(ancestry_records)
 
             logger.info(f"Total context sources: {len(context)}")
 

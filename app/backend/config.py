@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     embedding_provider: str = "ollama"
     openai_embedding_model: str = "text-embedding-3-small"
 
+    # Texts per embedding HTTP request. Larger batches mean fewer requests
+    # and less per-request overhead, but a failed request loses the whole
+    # batch. Tune via EMBED_BATCH_SIZE in .env.
+    embed_batch_size: int = 128
+
     # Embeddings dimension
     embedding_dimension: int = 768
 

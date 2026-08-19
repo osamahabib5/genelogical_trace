@@ -96,7 +96,10 @@ async def _process_direct(
 
     logger.info(f"[direct:{document_id}] Step 3/6: embedding {len(chunks)} chunks via '{settings.embedding_provider}'")
     with step_timer(event, "embed chunks"):
-        embeddings = embedding_service.embed_texts(chunks)
+        # Larger batches reduce the number of HTTP requests to Ollama,
+        # where each request carries ~2s of fixed overhead on this machine.
+        # Tune via EMBED_BATCH_SIZE in .env.
+        embeddings = embedding_service.embed_texts(chunks, batch_size=settings.embed_batch_size)
 
     logger.info(f"[direct:{document_id}] Step 4/6: storing chunks + footnotes")
     with step_timer(event, "store chunks + footnotes"):
@@ -109,9 +112,13 @@ async def _process_direct(
 
     stored = 0
     with step_timer(event, "embed + store ancestry records"):
-        for rec in records[:50]:
-            raw = json.dumps(rec)
-            emb = embedding_service.embed_text(raw)
+        person_records = records[:50]
+        raw_texts = [json.dumps(rec) for rec in person_records]
+        # Embed all person records in one batched request instead of one
+        # HTTP call per record (each call costs ~2s of fixed overhead).
+        # Batch size is configurable via EMBED_BATCH_SIZE in .env.
+        record_embeddings = embedding_service.embed_texts(raw_texts, batch_size=settings.embed_batch_size)
+        for rec, raw, emb in zip(person_records, raw_texts, record_embeddings):
             db.add(AncestryData(
                 document_id=document_id,
                 person_name=rec.get("person_name"),

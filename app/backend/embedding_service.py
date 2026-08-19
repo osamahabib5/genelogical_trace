@@ -1,11 +1,12 @@
 """
 Embedding service - supports Ollama (default), OpenAI, and Azure Foundry.
-DeepSeek and Groq do not provide embedding endpoints.
+DeepSeek and Groq do not provide embedding endpoints. 
 """
 
 import logging
+import time
 import requests
-from typing import List
+from typing import List, Optional
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -40,24 +41,49 @@ class EmbeddingService:
         all_embeddings = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            logger.info(f"Embedding batch {i//batch_size + 1} ({i+1}-{min(i+batch_size, len(texts))} of {len(texts)})")
-            try:
-                if self.provider == "openai":
-                    batch_embeddings = self._embed_openai_batch(batch)
-                elif self.provider == "azure-foundry":
-                    batch_embeddings = self._embed_azure_foundry_batch(batch)
-                else:
-                    batch_embeddings = self._embed_ollama_batch(batch)
-                all_embeddings.extend(batch_embeddings)
-                logger.info(
-                    f"Embedded batch {i//batch_size + 1}: {len(batch_embeddings)} vectors"
-                    f" (dim={len(batch_embeddings[0]) if batch_embeddings else 'n/a'})"
-                )
-            except Exception as e:
-                logger.error(f"Error embedding batch {i//batch_size + 1}: {e}")
-                all_embeddings.extend([[0.0] * settings.embedding_dimension for _ in batch])
+            batch_num = i // batch_size + 1
+            logger.info(f"Embedding batch {batch_num} ({i+1}-{min(i+batch_size, len(texts))} of {len(texts)})")
+            batch_embeddings = self._embed_batch_with_retry(batch, batch_num)
+            all_embeddings.extend(batch_embeddings)
+            logger.info(
+                f"Embedded batch {batch_num}: {len(batch_embeddings)} vectors"
+                f" (dim={len(batch_embeddings[0]) if batch_embeddings else 'n/a'})"
+            )
 
         return all_embeddings
+
+    def _embed_batch_with_retry(
+        self,
+        batch: List[str],
+        batch_num: int,
+        max_attempts: int = 2,
+    ) -> List[List[float]]:
+        """Embed one batch, retrying once on transient failure.
+
+        Raises on the final attempt instead of returning zero-vectors, so a
+        failed upload fails loudly rather than silently corrupting the
+        vector index with zero embeddings.
+        """
+        last_error: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if self.provider == "openai":
+                    return self._embed_openai_batch(batch)
+                elif self.provider == "azure-foundry":
+                    return self._embed_azure_foundry_batch(batch)
+                else:
+                    return self._embed_ollama_batch(batch)
+            except Exception as exc:
+                last_error = exc
+                if attempt < max_attempts:
+                    logger.warning(
+                        f"Embedding batch {batch_num} failed on attempt {attempt}: "
+                        f"{exc}; retrying once..."
+                    )
+                    time.sleep(1)
+        raise RuntimeError(
+            f"Embedding batch {batch_num} failed after {max_attempts} attempts: {last_error}"
+        ) from last_error
 
     def _embed_ollama_batch(self, texts: List[str]) -> List[List[float]]:
         response = requests.post(
