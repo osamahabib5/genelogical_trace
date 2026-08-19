@@ -8,14 +8,14 @@ import logging
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Any, Dict, Optional
 import uuid
 
 from database import SessionLocal, Document, DocumentChunk, AncestryData, DocumentFootnote, AzureSessionLocal
 from document_processor import DocumentProcessor
 from embedding_service import embedding_service
 from config import settings
-from rag_logging import rag_event_context, log_rag_event
+from rag_logging import rag_event_context, log_rag_event, step_timer
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,23 +58,34 @@ def _store_chunks_and_footnotes(db, document_id, chunks, embeddings, chunk_footn
     logger.info(f"[direct:{document_id}] stored {len(chunk_objs)} chunks and {fn_count} footnotes")
 
 
-async def _process_direct(file_path: str, document: Document, db: Session):
+async def _process_direct(
+    file_path: str,
+    document: Document,
+    db: Session,
+    event: Optional[Dict[str, Any]] = None,
+):
     """
     Deterministic pipeline: extract -> chunk -> embed (Ollama) -> store ->
     regex entity extraction. No LLM calls.
+
+    If `event` is provided (a rag_event_context record), each phase is timed
+    with step_timer() so per-step durations end up in the upload log.
     """
     document_id = document.id
+    event = event or {"steps_taken": []}
 
     logger.info(f"[direct:{document_id}] Step 1/6: extracting text from {Path(file_path).name}")
-    full_text, chunks = DocumentProcessor.process_document(file_path)
+    with step_timer(event, "extract text"):
+        full_text, chunks = DocumentProcessor.process_document(file_path)
 
     chunk_footnote_map = {}
     if file_path.lower().endswith(".docx"):
         try:
-            footnotes = DocumentProcessor.extract_footnotes_from_docx(file_path)
-            clean_text, chunks, chunk_footnote_map = DocumentProcessor.build_text_and_chunk_footnote_map(
-                file_path, footnotes
-            )
+            with step_timer(event, "extract footnotes (docx)"):
+                footnotes = DocumentProcessor.extract_footnotes_from_docx(file_path)
+                clean_text, chunks, chunk_footnote_map = DocumentProcessor.build_text_and_chunk_footnote_map(
+                    file_path, footnotes
+                )
             if clean_text:
                 full_text = clean_text
             logger.info(f"[direct:{document_id}] extracted {len(footnotes)} footnotes from DOCX")
@@ -84,33 +95,37 @@ async def _process_direct(file_path: str, document: Document, db: Session):
     logger.info(f"[direct:{document_id}] Step 2/6: text={len(full_text)} chars, {len(chunks)} chunks")
 
     logger.info(f"[direct:{document_id}] Step 3/6: embedding {len(chunks)} chunks via '{settings.embedding_provider}'")
-    embeddings = embedding_service.embed_texts(chunks)
+    with step_timer(event, "embed chunks"):
+        embeddings = embedding_service.embed_texts(chunks)
 
     logger.info(f"[direct:{document_id}] Step 4/6: storing chunks + footnotes")
-    _store_chunks_and_footnotes(db, document_id, chunks, embeddings, chunk_footnote_map)
+    with step_timer(event, "store chunks + footnotes"):
+        _store_chunks_and_footnotes(db, document_id, chunks, embeddings, chunk_footnote_map)
 
     logger.info(f"[direct:{document_id}] Step 5/6: regex entity extraction")
-    records = DocumentProcessor.extract_person_records(full_text)
+    with step_timer(event, "extract person records"):
+        records = DocumentProcessor.extract_person_records(full_text)
     logger.info(f"[direct:{document_id}] extracted {len(records)} person records")
 
     stored = 0
-    for rec in records[:50]:
-        raw = json.dumps(rec)
-        emb = embedding_service.embed_text(raw)
-        db.add(AncestryData(
-            document_id=document_id,
-            person_name=rec.get("person_name"),
-            birth_date=rec.get("birth_date"),
-            birth_location=rec.get("birth_location"),
-            death_date=rec.get("death_date"),
-            death_location=rec.get("death_location"),
-            occupation=rec.get("occupation"),
-            relation_type=rec.get("relation_type"),
-            related_to=rec.get("related_to"),
-            raw_text=raw,
-            embedding=emb
-        ))
-        stored += 1
+    with step_timer(event, "embed + store ancestry records"):
+        for rec in records[:50]:
+            raw = json.dumps(rec)
+            emb = embedding_service.embed_text(raw)
+            db.add(AncestryData(
+                document_id=document_id,
+                person_name=rec.get("person_name"),
+                birth_date=rec.get("birth_date"),
+                birth_location=rec.get("birth_location"),
+                death_date=rec.get("death_date"),
+                death_location=rec.get("death_location"),
+                occupation=rec.get("occupation"),
+                relation_type=rec.get("relation_type"),
+                related_to=rec.get("related_to"),
+                raw_text=raw,
+                embedding=emb
+            ))
+            stored += 1
 
     document.content = full_text[:1000000]
     document.doc_metadata.update({
@@ -136,13 +151,20 @@ async def _process_direct(file_path: str, document: Document, db: Session):
     }
 
 
-async def _process_with_agent(file_path: str, document: Document, db: Session):
+async def _process_with_agent(
+    file_path: str,
+    document: Document,
+    db: Session,
+    event: Optional[Dict[str, Any]] = None,
+):
     """Optional DeepSeek-powered agentic cleaning (USE_AGENT_PROCESSING=true)."""
     from agent_service import genealogy_agent  # lazy import: only for agent mode
 
     document_id = document.id
     logger.info(f"Starting agent processing for document {document_id}")
-    agent_result = await genealogy_agent.process_document(file_path, document_id)
+    event = event or {"steps_taken": []}
+    with step_timer(event, "agent processing"):
+        agent_result = await genealogy_agent.process_document(file_path, document_id)
 
     if not agent_result["success"]:
         document.doc_metadata["status"] = "failed"
@@ -196,10 +218,10 @@ async def upload_document(
             unique_filename = f"{uuid.uuid4()}_{file.filename}"
             file_path = os.path.join(settings.upload_directory, unique_filename)
 
-            with open(file_path, "wb") as f:
-                content = await file.read()
-                f.write(content)
-            event["steps_taken"].append("save file to disk")
+            with step_timer(event, "save file to disk"):
+                with open(file_path, "wb") as f:
+                    content = await file.read()
+                    f.write(content)
 
             if len(content) > settings.max_upload_size:
                 os.remove(file_path)
@@ -219,17 +241,17 @@ async def upload_document(
                     "status": "processing"
                 }
             )
-            db.add(document)
-            db.flush()
-            document_id = document.id
+            with step_timer(event, "create document record"):
+                db.add(document)
+                db.flush()
+                document_id = document.id
             logger.info(f"Created document record ID={document_id} ({processing_method})")
-            event["steps_taken"].append("create document record")
 
             if settings.use_agent_processing:
-                result = await _process_with_agent(file_path, document, db)
+                result = await _process_with_agent(file_path, document, db, event=event)
                 event["tools_called"].append("GenealogyAgent.process_document")
             else:
-                result = await _process_direct(file_path, document, db)
+                result = await _process_direct(file_path, document, db, event=event)
                 event["tools_called"].extend([
                     "DocumentProcessor.process_document",
                     "embedding_service.embed_texts",

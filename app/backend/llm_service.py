@@ -3,16 +3,54 @@ LLM service - supports DeepSeek, OpenAI, Groq, Ollama, and Azure Foundry
 """
 
 import logging
+import re
 import requests
+from enum import Enum
 from typing import Any, List, Dict, Optional, Tuple
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 
+class ReasoningMode(str, Enum):
+    """DeepSeek thinking-effort levels (OpenAI format `reasoning_effort`)."""
+
+    LOW = "low"
+    HIGH = "high"
+    MAX = "max"
+
+
+# Rule-based query classification. Rules are checked in priority order:
+# comparison / multi-step patterns win over simple factoid patterns so a
+# query like "what is the difference between X and Y" is HIGH, not LOW.
+RULES = [
+    (r"\b(compare|difference|vs|versus|contrast)\b", ReasoningMode.HIGH),
+    (
+        r"\b(you said|earlier|what did you mean|last time|how does .* relate|"
+        r"connect|between .* and|search|browse|fetch|calculate|email|send)\b",
+        ReasoningMode.MAX,
+    ),
+    (r"\b(what is|who is|define|when did)\b", ReasoningMode.LOW),
+]
+
+
+def rule_based_classify(query: str) -> Optional[ReasoningMode]:
+    """Classify a query into a DeepSeek reasoning-effort level.
+
+    Returns None when no rule matches; callers should fall back to
+    ReasoningMode.LOW (cheap, fast default).
+    """
+    q = query.lower()
+    for pattern, mode in RULES:
+        if re.search(pattern, q):
+            return mode
+    return None
+
+
 class LLMService:
     def __init__(self):
         self.provider = settings.llm_provider
+        self.last_reasoning_mode: Optional[str] = None
         logger.info(f"LLM service using provider: {self.provider}")
 
     def generate_response(
@@ -46,7 +84,7 @@ class LLMService:
             if self.provider == "openai":
                 return self._call_openai(system_prompt, user_message)
             elif self.provider == "deepseek":
-                return self._call_deepseek(system_prompt, user_message)
+                return self._call_deepseek(query, system_prompt, user_message)
             elif self.provider == "groq":
                 return self._call_groq(system_prompt, user_message)
             elif self.provider == "azure-foundry":
@@ -118,8 +156,15 @@ class LLMService:
         }
         return data["message"]["content"], usage
 
-    def _call_deepseek(self, system_prompt: str, user_message: str) -> Tuple[str, Dict[str, int]]:
-        """Call the DeepSeek API (OpenAI-compatible)."""
+    def _call_deepseek(self, query: str, system_prompt: str, user_message: str) -> Tuple[str, Dict[str, int]]:
+        """Call the DeepSeek API (OpenAI-compatible) with classified thinking.
+
+        The query is classified with rule_based_classify() and mapped to a
+        `reasoning_effort` level (low/high/max) so simple factoid questions
+        answer quickly while comparison / multi-step questions get a bigger
+        reasoning budget. Queries matching no rule default to low.
+        DeepSeek's default is thinking mode enabled.
+        """
         from openai import OpenAI
         client = OpenAI(
             api_key=settings.deepseek_api_key,
@@ -130,6 +175,11 @@ class LLMService:
             {"role": "user", "content": user_message}
         ]
 
+        # No rule match falls back to LOW — the cheap, fast default.
+        mode = rule_based_classify(query) or ReasoningMode.LOW
+        self.last_reasoning_mode = mode.value
+        logger.info("DeepSeek reasoning mode for query: %s", mode.value)
+
         # In DeepSeek "thinking" mode, reasoning tokens count toward max_tokens.
         # Reserve enough budget so the final answer is not truncated to an
         # empty content (which previously caused source-only responses).
@@ -137,7 +187,7 @@ class LLMService:
             model=settings.deepseek_model,
             messages=messages,
             stream=False,
-            reasoning_effort="high",
+            reasoning_effort=mode.value,
             extra_body={"thinking": {"type": "enabled"}},
             temperature=settings.temperature,
             max_tokens=max(settings.max_tokens, 4096)

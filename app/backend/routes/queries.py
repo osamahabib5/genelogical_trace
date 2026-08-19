@@ -68,6 +68,28 @@ def extract_keywords(query: str) -> Optional[str]:
     return None
 
 
+SMALL_TALK_PATTERNS = [
+    r"\b(hi|hello|hey|hiya|howdy|yo)\b",
+    r"\bhow are you",
+    r"\bwhat('s| is) (your|my) name",
+    r"\bwho am i\b",
+    r"\bthank(s| you)\b",
+    r"\bgood (morning|afternoon|evening)\b",
+    r"\b(bye|goodbye|see you)\b",
+    r"\bwhat can you do\b",
+]
+
+# Minimum similarity for a retrieved chunk to be considered relevant enough
+# to show as a source.
+RELEVANCE_THRESHOLD = 0.35
+
+
+def is_small_talk(query: str) -> bool:
+    """True for greetings and other off-topic chit-chat."""
+    q = query.lower().strip()
+    return any(re.search(pattern, q) for pattern in SMALL_TALK_PATTERNS)
+
+
 @router.post("/search")
 async def search_ancestry(
     request: SearchRequest,
@@ -189,6 +211,9 @@ async def ask_chatbot(
                 if settings.llm_provider == "deepseek"
                 else "flat"
             )
+            event["reasoning_mode"] = getattr(
+                llm_service, "last_reasoning_mode", None
+            )
             event["estimated_cost_usd"] = estimate_llm_cost(
                 provider=settings.llm_provider,
                 model=llm_service.get_active_model_name(),
@@ -201,13 +226,28 @@ async def ask_chatbot(
         elapsed = round(time.time() - start_time, 2)
         logger.info(f"Query answered in {elapsed}s")
 
+        # Only show sources when the query is on-topic: skip greetings /
+        # chit-chat and queries whose best retrieved chunk is below the
+        # relevance threshold.
+        best_score = max(
+            (
+                float(src.get("similarity_score") or 0)
+                for src in context
+                if isinstance(src, dict) and "similarity_score" in src
+            ),
+            default=0.0,
+        )
+        show_sources = not is_small_talk(query) and best_score >= RELEVANCE_THRESHOLD
+        logger.info(f"Sources shown: {show_sources} | best similarity: {best_score:.3f}")
+
         # Enrich sources with page numbers
         enriched_sources = []
-        for src in context[:3]:
-            enriched = dict(src)
-            if 'chunk_number' in enriched:
-                enriched['page_number'] = (enriched['chunk_number'] // 3) + 1
-            enriched_sources.append(enriched)
+        if show_sources:
+            for src in context[:3]:
+                enriched = dict(src)
+                if 'chunk_number' in enriched:
+                    enriched['page_number'] = (enriched['chunk_number'] // 3) + 1
+                enriched_sources.append(enriched)
 
         try:
             db.add(QueryHistory(

@@ -75,19 +75,14 @@ DEFAULT_JSON_PATH = Path(__file__).resolve().parent / "rag_summary.json"
 # Serializes appends from concurrent FastAPI requests.
 _WRITE_LOCK = threading.Lock()
 
-try:
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-    _TZ = ZoneInfo("America/New_York")  # US Eastern (EST in winter, EDT in summer)
-except (ImportError, ZoneInfoNotFoundError):
-    # Windows without the `tzdata` package: fall back to a fixed EST offset.
-    _TZ = timezone(timedelta(hours=-5))
-    logger.warning("IANA tz database unavailable; using fixed EST (UTC-5) timestamps")
+# Fixed EDT (UTC-4) for all timestamps — no daylight saving adjustments.
+_TZ = timezone(timedelta(hours=-4))
 
 
-def _timestamp_est() -> str:
-    """Current time converted to US Eastern Time (EST/EDT)."""
-    return datetime.now(timezone.utc).astimezone(_TZ).isoformat(timespec="seconds")
+def _timestamp_edt() -> str:
+    """Current time in fixed EDT, formatted as 'YYYY-MM-DD HH:MM:SS EDT'."""
+    edt_now = datetime.now(timezone.utc).astimezone(_TZ)
+    return f"{edt_now.strftime('%Y-%m-%d %H:%M:%S')} EDT"
 
 
 def _round_seconds(value: Optional[float]) -> Optional[float]:
@@ -207,6 +202,7 @@ def log_rag_event(
     input_cache_miss_tokens: Optional[int] = None,
     estimated_cost_usd: Optional[float] = None,
     pricing_rate: Optional[str] = None,
+    reasoning_mode: Optional[str] = None,
     json_path: Optional[Union[str, Path]] = None,
 ) -> None:
     """Append one event object to the RAG summary JSON Lines file.
@@ -234,6 +230,8 @@ def log_rag_event(
             (see estimate_llm_cost()).
         pricing_rate: Billing bucket used, e.g. "peak"/"off-peak" (DeepSeek)
             or "flat" (other providers).
+        reasoning_mode: DeepSeek reasoning effort used for the LLM call
+            ("low"/"high"/"max"), if applicable.
         json_path: Optional custom output file
             (defaults to app/backend/rag_summary.json).
     """
@@ -244,7 +242,7 @@ def log_rag_event(
         )
 
     record = {
-        "timestamp_est": _timestamp_est(),
+        "timestamp_edt": _timestamp_edt(),
         "action_type": action_type,
         "duration_seconds": _round_seconds(duration_seconds),
         "file_name": file_name or "",
@@ -260,6 +258,7 @@ def log_rag_event(
         "input_cache_miss_tokens": input_cache_miss_tokens,
         "estimated_cost_usd": estimated_cost_usd,
         "pricing_rate": pricing_rate,
+        "reasoning_mode": reasoning_mode,
     }
 
     path = Path(json_path) if json_path else DEFAULT_JSON_PATH
@@ -310,6 +309,7 @@ def rag_event_context(
         "input_cache_miss_tokens": None,
         "estimated_cost_usd": None,
         "pricing_rate": None,
+        "reasoning_mode": None,
     }
     try:
         yield event
