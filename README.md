@@ -64,6 +64,7 @@ genealogy_traceline/
 │   │   ├── embedding_service.py  # Embeddings generation
 │   │   ├── retrieval_service.py  # Vector search
 │   │   ├── llm_service.py      # LLM interactions (DeepSeek / Groq)
+│   │   ├── rag_logging.py      # Event logging: timings, tokens, cost
 │   │   └── routes/
 │   │       ├── documents.py    # Document endpoints
 │   │       └── queries.py      # Query endpoints
@@ -82,7 +83,8 @@ genealogy_traceline/
 │       ├── init.sql            # SQL schema reference
 │       └── supabase_setup.sql  # Supabase PostgreSQL setup script
 ├── sources/                    # Sample documents
-└── uploads/                    # Uploaded documents (created at runtime)
+├── uploads/                    # Uploaded documents (created at runtime)
+└── test_embedding_batches_size.py  # Embedding batch-size benchmark
 ```
 
 ## Setup Instructions
@@ -135,6 +137,9 @@ GROQ_MODEL=llama-3.1-8b-instant
 EMBEDDING_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_EMBED_MODEL=nomic-embed-text
+# Texts per embedding HTTP request (default 128). 256-512 is the sweet spot
+# for upload speed on CPU-only Ollama machines.
+EMBED_BATCH_SIZE=128
 # OPENAI_API_KEY=your-openai-api-key
 # OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 
@@ -200,6 +205,8 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
+The backend classifies each question and picks the DeepSeek reasoning effort automatically: `low` for simple factoid questions ("who is…", "when did…"), `high` for comparisons, and `max` for multi-step research questions ("search", "connect", "between … and"). Unmatched questions default to `low` for speed and lower cost. Thinking mode stays enabled; the rules live in `rule_based_classify()` in `llm_service.py`.
+
 ### Groq (secondary)
 
 To switch to Groq, change `.env`:
@@ -218,6 +225,8 @@ DeepSeek and Groq do not offer embedding endpoints, so document embeddings come 
 - **OpenAI** `text-embedding-3-small` — 1536 dimensions
 
 The dimension must match the `vector(...)` column type in the Supabase schema (see `database/supabase_setup.sql`).
+
+Embeddings are generated in batches. `EMBED_BATCH_SIZE` (default 128) controls how many texts go into each embedding request — raise it to 256–512 to cut per-request overhead on slow machines. Failed batches are retried once and then raise an error instead of silently storing zero vectors.
 
 ## Supabase Database Setup
 
@@ -361,6 +370,24 @@ Notes:
 - `query_date`: Timestamp of the query
 - `relevance_score`: Optional relevance score
 
+## Observability: Logging, Token Usage & Cost
+
+Every chatbot query and every file action (upload, view, delete) is appended as a JSON object to `app/backend/rag_summary.json` (one object per line, append-only):
+
+- `steps_taken` — each pipeline step with its own duration (embed query, vector retrieval, LLM generation, …)
+- `input_tokens`, `output_tokens`, `input_cache_hit_tokens`, `input_cache_miss_tokens` — token usage reported by the LLM
+- `estimated_cost_usd` + `pricing_rate` — cost in USD using DeepSeek's official peak/off-peak rates and the prompt-cache hit/miss split
+- `reasoning_mode` — the DeepSeek reasoning effort chosen for the query (`low`/`high`/`max`)
+- `duration_seconds` — total time for the action
+
+To benchmark different embedding batch sizes against the real upload pipeline:
+
+```bash
+python test_embedding_batches_size.py
+```
+
+This uploads `sources/ARHO_DEScendants_scrap.docx` with batch sizes 128/256/512/1024, records the per-step timings, deletes each test document, and writes a comparison table to `app/backend/embedding_batch_test_results.json`.
+
 ## Troubleshooting
 
 ### Supabase Connection Error
@@ -411,6 +438,9 @@ REINDEX INDEX idx_ancestry_embedding;
 ### Connection Pooling
 - The backend uses SQLAlchemy connection pooling; adjust pool settings in `config.py` for more concurrent requests.
 - Connect through the Supabase **session pooler** (port `5432`) so the pooler manages Postgres connections for you.
+
+### Embedding Batch Size
+- Tune `EMBED_BATCH_SIZE` in `.env` (default 128). On CPU-only Ollama machines, 256–512 typically minimizes upload time; benchmark with `python test_embedding_batches_size.py`.
 
 ## Security Notes
 

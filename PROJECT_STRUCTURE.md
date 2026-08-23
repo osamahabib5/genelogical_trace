@@ -17,6 +17,7 @@ genealogy_traceline/
 │   │   ├── embedding_service.py             # Embeddings (Ollama default / OpenAI / Azure Foundry)
 │   │   ├── retrieval_service.py             # Vector similarity search
 │   │   ├── llm_service.py                   # LLM response generation (DeepSeek / Groq)
+│   │   ├── rag_logging.py                   # RAG event logging (timings, tokens, cost)
 │   │   ├── agent_service.py                 # Agentic document processing
 │   │   ├── extract_entities.py              # Standalone entity extraction script
 │   │   ├── uploads/                         # Local uploads (created at runtime)
@@ -66,7 +67,8 @@ genealogy_traceline/
 ├── PROJECT_STRUCTURE.md                     # This file
 │
 ├── api_client.py                            # Python API client helper
-└── test_agent.py                            # Agent test helper
+├── test_agent.py                            # Agent test helper
+└── test_embedding_batches_size.py           # Embedding batch-size benchmark
 ```
 
 ## Component Details
@@ -95,8 +97,9 @@ genealogy_traceline/
    - Keyword pattern matching
 
 4. **embedding_service.py** - Vector embeddings
-   - OpenAI embeddings integration (default; Ollama/Azure Foundry alternates)
-   - Batch embedding generation
+   - Ollama `nomic-embed-text` (default) / OpenAI / Azure Foundry
+   - Batched embedding generation (batch size via `EMBED_BATCH_SIZE`, default 128)
+   - Per-batch retry; raises on repeated failure instead of storing zero vectors
    - Embedding dimension: 768 (Ollama, default) / 1536 (OpenAI)
 
 5. **retrieval_service.py** - Semantic search
@@ -108,6 +111,8 @@ genealogy_traceline/
 6. **llm_service.py** - Language model interaction
    - DeepSeek API integration (primary; OpenAI-compatible endpoint)
    - Groq API fallback (secondary)
+   - Rule-based query classifier selects DeepSeek reasoning effort (low/high/max)
+   - Returns token usage (prompt/completion/cache hit/miss) with each answer
    - Context-aware response generation
    - System prompt management
    - Source citation
@@ -125,6 +130,12 @@ genealogy_traceline/
    - GET /family/{name} - Family tree
    - GET /documents/{type} - Filter documents
    - GET /history - Query history
+
+9. **rag_logging.py** - RAG event logging
+   - Append-only JSON Lines output to `rag_summary.json`
+   - Per-step timings (`step_timer`), token usage, USD cost estimation
+     (DeepSeek peak/off-peak rates + prompt cache hit/miss split)
+   - Wired into every query and every file action (upload / view / delete)
 
 ### Frontend Architecture
 
@@ -317,7 +328,8 @@ See `.env.example` for all available options:
 
 - Vector indexes (IVFFlat)
 - Connection pooling
-- Batch embedding requests
+- Configurable batched embedding requests (`EMBED_BATCH_SIZE`, default 128)
+- Per-step timing logs in `rag_summary.json` for identifying bottlenecks
 - Chunked document processing
 - Frontend code splitting ready
 - CSS minification for production

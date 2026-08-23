@@ -165,6 +165,8 @@ GROQ_MODEL=llama-3.1-8b-instant
 EMBEDDING_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_EMBED_MODEL=nomic-embed-text
+# Texts per embedding request; raise to 256/512 for faster uploads on slow machines
+EMBED_BATCH_SIZE=128
 # OPENAI_API_KEY=sk-your-openai-api-key   # optional for 1536-dim OpenAI embeddings
 
 # API
@@ -201,6 +203,19 @@ WHERE person_name IS NOT NULL;
 
 ---
 
+## 📊 Logging & Monitoring
+
+Every query and file action is logged to `app/backend/rag_summary.json` with
+per-step timings, token usage, and USD cost (DeepSeek peak/off-peak rates).
+
+Benchmark embedding batch sizes:
+
+```bash
+python test_embedding_batches_size.py
+```
+
+---
+
 ## ⚠️ Troubleshooting
 
 ### Services won't start
@@ -215,6 +230,7 @@ WHERE person_name IS NOT NULL;
 
 ### Slow performance
 - Wait for document processing to complete (check uploads/)
+- Raise `EMBED_BATCH_SIZE` (256/512) in `.env` to speed up uploads on CPU-only machines
 - Rebuilding indexes may help:
   ```sql
   REINDEX INDEX idx_chunks_embedding;
@@ -266,4 +282,4 @@ Common issues are documented in [DEVELOPMENT.md](DEVELOPMENT.md#common-issues-an
 
 ---
 
-Last Updated: 2026-08-16
+Last Updated: 2026-08-23
