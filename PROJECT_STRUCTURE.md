@@ -17,6 +17,7 @@ genealogy_traceline/
 │   │   ├── embedding_service.py             # Embeddings (Ollama default / OpenAI / Azure Foundry)
 │   │   ├── retrieval_service.py             # Vector similarity search
 │   │   ├── llm_service.py                   # LLM response generation (DeepSeek / Groq)
+│   │   ├── agent_orchestration.py           # LangGraph research agent (/research)
 │   │   ├── rag_logging.py                   # RAG event logging (timings, tokens, cost)
 │   │   ├── agent_service.py                 # Agentic document processing
 │   │   ├── extract_entities.py              # Standalone entity extraction script
@@ -136,6 +137,12 @@ genealogy_traceline/
    - Per-step timings (`step_timer`), token usage, USD cost estimation
      (DeepSeek peak/off-peak rates + prompt cache hit/miss split)
    - Wired into every query and every file action (upload / view / delete)
+
+10. **agent_orchestration.py** - LangGraph research agent
+   - Stateful workflow: classify → retrieve → generate → verify → approve
+   - Reuses embedding/retrieval/LLM services; token budget + citation verifier
+   - Checkpointed runs with optional human-in-the-loop approval
+   - Serves `POST /api/queries/research` and `/research/{thread_id}/approve`
 
 ### Frontend Architecture
 

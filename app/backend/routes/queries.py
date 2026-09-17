@@ -286,6 +286,92 @@ async def ask_chatbot(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/research")
+def research_agent(request: AskRequest, db: Session = Depends(get_db)):
+    """
+    Multi-step LangGraph research agent (classify -> retrieve -> generate ->
+    verify -> approve). Falls back to the direct RAG path if the agent fails,
+    so callers always get an answer.
+    """
+    query = request.query
+    start_time = time.time()
+
+    try:
+        with rag_event_context("query", query_text=query) as event:
+            from agent_orchestration import run_research  # lazy: langgraph optional
+
+            result = run_research(query, db)
+
+            event["steps_taken"].extend(result.get("step_log", []))
+            event["tools_called"].extend(result.get("tool_log", []))
+            event["api_calls_made"].append(f"llm ({settings.llm_provider})")
+            event["final_response"] = result.get("answer", "")
+            event["reasoning_mode"] = result.get("mode")
+            usage = result.get("usage") or {}
+            event["input_tokens"] = usage.get("prompt_tokens")
+            event["output_tokens"] = usage.get("completion_tokens")
+            event["input_cache_hit_tokens"] = usage.get("prompt_cache_hit_tokens")
+            event["input_cache_miss_tokens"] = usage.get("prompt_cache_miss_tokens")
+            event["pricing_rate"] = (
+                deepseek_pricing_rate()
+                if settings.llm_provider == "deepseek"
+                else "flat"
+            )
+            event["estimated_cost_usd"] = estimate_llm_cost(
+                provider=settings.llm_provider,
+                model=llm_service.get_active_model_name(),
+                input_tokens=event["input_tokens"],
+                output_tokens=event["output_tokens"],
+                input_cache_hit_tokens=event["input_cache_hit_tokens"],
+                input_cache_miss_tokens=event["input_cache_miss_tokens"],
+            )
+
+        return {
+            "query": query,
+            "response": result.get("answer", ""),
+            "status": result.get("status", "complete"),
+            "verified": result.get("verified"),
+            "approved": result.get("approved"),
+            "verification_note": result.get("verification_note"),
+            "reasoning_mode": result.get("mode"),
+            "thread_id": result.get("thread_id"),
+            "sources": result.get("sources", []),
+            "response_time_seconds": round(time.time() - start_time, 2),
+            "agent": True,
+        }
+
+    except Exception as e:
+        logger.warning(f"Research agent failed ({e}); falling back to direct RAG")
+        embedding = embedding_service.embed_text(query)
+        chunks = RetrievalService.search_similar_chunks(db, embedding, top_k=8)
+        response, _ = llm_service.generate_response_with_usage(query, chunks)
+        return {
+            "query": query,
+            "response": response,
+            "status": "complete",
+            "agent": False,
+            "fallback": True,
+            "sources": chunks[:3],
+            "response_time_seconds": round(time.time() - start_time, 2),
+        }
+
+
+@router.post("/research/{thread_id}/approve")
+def research_approve(
+    thread_id: str,
+    decision: str = "approve",
+    db: Session = Depends(get_db)
+):
+    """Resume a research run paused at the human-approval gate."""
+    if decision not in {"approve", "revise"}:
+        raise HTTPException(status_code=400, detail="decision must be 'approve' or 'revise'")
+    try:
+        from agent_orchestration import resume_approval
+        return resume_approval(thread_id, db, decision)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not resume run: {e}")
+
+
 @router.get("/person/{name}")
 async def search_person(name: str, db: Session = Depends(get_db)):
     try:

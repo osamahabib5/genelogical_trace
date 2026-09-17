@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     # True  = DeepSeek-powered agentic cleaning (slower, more thorough).
     use_agent_processing: bool = False
 
+    # Agent orchestration (LangGraph research agent, /api/queries/research)
+    # Cumulative completion-token budget per research run.
+    agent_token_budget: int = 4000
+    # True pauses each research run for human approval before returning.
+    require_human_approval: bool = False
+
     def __init__(self, **data):
         super().__init__(**data)
         

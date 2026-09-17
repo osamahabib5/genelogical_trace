@@ -64,6 +64,7 @@ genealogy_traceline/
 │   │   ├── embedding_service.py  # Embeddings generation
 │   │   ├── retrieval_service.py  # Vector search
 │   │   ├── llm_service.py      # LLM interactions (DeepSeek / Groq)
+│   │   ├── agent_orchestration.py  # LangGraph research agent (/research)
 │   │   ├── rag_logging.py      # Event logging: timings, tokens, cost
 │   │   └── routes/
 │   │       ├── documents.py    # Document endpoints
@@ -293,6 +294,8 @@ Notes:
 - **GET** `/api/queries/family/{person_name}` - Search family connections
 - **GET** `/api/queries/documents/{doc_type}` - Get documents by type
 - **GET** `/api/queries/history` - Get query history
+- **POST** `/api/queries/research` - Run the multi-step LangGraph research agent (classify → retrieve → generate → verify → approve), with automatic fallback to the direct RAG path
+- **POST** `/api/queries/research/{thread_id}/approve` - Resume a research run paused at the human-approval gate (`decision=approve|revise`)
 
 ## Usage Examples
 
@@ -387,6 +390,29 @@ python test_embedding_batches_size.py
 ```
 
 This uploads `sources/ARHO_DEScendants_scrap.docx` with batch sizes 128/256/512/1024, records the per-step timings, deletes each test document, and writes a comparison table to `app/backend/embedding_batch_test_results.json`.
+
+## Agentic Research (LangGraph Orchestration)
+
+The optional `/api/queries/research` endpoint runs a stateful, multi-step research agent built with LangGraph, reusing the same services as `/ask`:
+
+```
+classify → retrieve → generate → verify → approve
+```
+
+- **classify** — picks the DeepSeek reasoning effort via the existing rule-based classifier (defaults to `high`).
+- **retrieve** — embeds the query and searches document chunks + person records.
+- **generate** — drafts the answer and enforces a cumulative token budget.
+- **verify** — a second LLM pass checks every footnote citation against the retrieved context.
+- **approve** — human-in-the-loop gate; rejected drafts loop back to `generate`.
+
+Configuration (`.env`):
+
+```env
+AGENT_TOKEN_BUDGET=4000            # cumulative completion tokens per run
+REQUIRE_HUMAN_APPROVAL=false       # true = pause for approval before returning
+```
+
+Runs are checkpointed and keyed by `thread_id`; when approval is enabled, a paused run resumes via `POST /api/queries/research/{thread_id}/approve` with `decision=approve|revise`. If the agent errors, the endpoint falls back to the direct RAG path so callers always get an answer. Every agent run is logged to `rag_summary.json` with per-node timings and tool calls, just like `/ask`.
 
 ## Troubleshooting
 

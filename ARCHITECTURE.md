@@ -11,12 +11,13 @@ This document provides a high‑level description of the main components and dat
 - **Entry point:** `main.py` - configures FastAPI, mounts routers and database dependency.
 - **Routes:**
   - `routes/documents.py` handles document upload, listing, retrieval and deletion.
-  - `routes/queries.py` handles search, chat (`/ask`), person/family lookups and history.
+  - `routes/queries.py` handles search, chat (`/ask`), the LangGraph research agent (`/research`), person/family lookups and history.
 - **Services:**
   - `document_processor.py` handles ingestion, text extraction, chunking and entity extraction.
   - `embedding_service.py` wraps the embeddings API — local Ollama `nomic-embed-text` by default, with OpenAI (`text-embedding-3-small`) and Azure Foundry as alternatives.
   - `retrieval_service.py` provides vector similarity searches against pgvector tables plus specialized ancestry queries.
   - `llm_service.py` is responsible for generating chatbot responses using the selected language model — **DeepSeek** by default (primary), with **Groq** as secondary.
+  - `agent_orchestration.py` builds the multi-step LangGraph research agent (`/research`) on top of the services above — classify → retrieve → generate → verify → approve.
 - **Database models:**
   - Defined in `database.py` (e.g. `Document`, `Chunk`, `AncestryRecord`, `QueryHistory`).
   - Database connection via SQLAlchemy and a `SessionLocal` factory.
@@ -114,6 +115,18 @@ The application runs as plain local processes — no Docker:
 - **Environment variables** live in `.env` (copied from `.env.example`) and are read by `config.py` via pydantic-settings.
 - **Runtime folders:** `uploads/` stores uploaded files; vector data lives in Supabase.
 
+### 1.6 Agent Orchestration (LangGraph)
+- **Location:** `app/backend/agent_orchestration.py`
+- A stateful LangGraph workflow (`classify → retrieve → generate → verify → approve`) that reuses `embedding_service`, `RetrievalService`, `llm_service`, and the rule-based classifier.
+- **Nodes:**
+  - `classify` — picks reasoning effort via `rule_based_classify` (default `high` on the research path).
+  - `retrieve` — embeds the query and searches chunks + person records.
+  - `generate` — drafts the answer and enforces a cumulative token budget (`AGENT_TOKEN_BUDGET`).
+  - `verify` — a second LLM pass audits every footnote citation against the retrieved context.
+  - `approve` — human-in-the-loop gate; with `REQUIRE_HUMAN_APPROVAL=false` it auto-approves. Rejected drafts loop back to `generate`.
+- **State & resume:** runs are checkpointed (`MemorySaver`, swap for a Postgres checkpointer in production) and keyed by `thread_id`; paused runs resume via `POST /api/queries/research/{thread_id}/approve`.
+- **Failure behavior:** the `/research` endpoint falls back to the direct RAG path if the agent errors, so callers always receive an answer. Every node records timings and tool calls into `rag_summary.json`.
+
 ## 2. Data Flow
 
 1. **Document ingestion:**
@@ -125,6 +138,9 @@ The application runs as plain local processes — no Docker:
    - `RetrievalService` executes vector similarity queries on the `document_chunks` and/or ancestry tables to find top‑k matches.
    - For `/ask` endpoints, the top results are packaged as context and passed to `llm_service.generate_response()`, which composes a prompt and posts it to the LLM. The resulting response and context count are returned to the frontend.
    - All queries are optionally logged in `QueryHistory`.
+
+3. **Agentic research (`/research`):**
+   - The LangGraph workflow classifies the query, retrieves context, generates a draft, verifies citations, and (optionally) waits for human approval before returning — with per-node timings and tool calls logged to `rag_summary.json`. On any agent error, the endpoint falls back to the direct `/ask`-style pipeline.
 
 3. **Family/person lookups:**
    - Requests to `/person/{name}` and `/family/{name}` trigger specialized database queries that use indexed ancestry data to locate matching records or connected family members.
