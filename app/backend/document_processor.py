@@ -11,6 +11,8 @@ from typing import List, Dict, Tuple
 from pathlib import Path
 import json
 
+from config import settings
+
 try:
     from docx import Document as DocxDocument
 except ImportError:
@@ -91,7 +93,15 @@ class DocumentProcessor:
         else:
             raise ValueError(f"Unsupported file format: {file_ext}")
 
-        chunks = DocumentProcessor._chunk_text(text)
+        if settings.semantic_chunking:
+            blocks = (
+                DocumentProcessor._extract_docx_blocks(file_path)
+                if file_ext == '.docx'
+                else DocumentProcessor._blocks_from_text(text)
+            )
+            chunks = DocumentProcessor._chunk_semantically(blocks)
+        else:
+            chunks = DocumentProcessor._chunk_text(text)
         return text, chunks
 
     @staticmethod
@@ -160,6 +170,16 @@ class DocumentProcessor:
                     para_text_parts = []
                     footnote_refs = []
 
+                    # Detect the paragraph style so semantic chunking can
+                    # use real Word heading levels (Heading 1, Heading 2...).
+                    style_name = ""
+                    level = 1
+                    pPr = para.find(f'{{{W}}}pPr')
+                    if pPr is not None:
+                        pStyle = pPr.find(f'{{{W}}}pStyle')
+                        if pStyle is not None:
+                            style_name = pStyle.get(f'{{{W}}}val') or ""
+
                     for child in para.iter():
                         tag = child.tag.replace(f'{{{W}}}', '')
 
@@ -176,9 +196,18 @@ class DocumentProcessor:
 
                     para_text = ''.join(para_text_parts).strip()
                     if para_text:
+                        heading_match = re.search(
+                            r'Heading\s*(\d+)', style_name, re.IGNORECASE
+                        )
                         paragraphs.append({
                             "text": para_text,
-                            "footnote_refs": footnote_refs
+                            "footnote_refs": footnote_refs,
+                            "is_heading": bool(heading_match) or (
+                                DocumentProcessor._looks_like_heading(para_text)
+                            ),
+                            "level": int(heading_match.group(1))
+                            if heading_match
+                            else 1,
                         })
 
             logger.info(f"Extracted {len(paragraphs)} paragraphs with footnote refs")
@@ -206,14 +235,30 @@ class DocumentProcessor:
         if not paragraphs:
             # Fall back to standard extraction
             text = DocumentProcessor._extract_docx(file_path)
-            chunks = DocumentProcessor._chunk_text(text)
+            if settings.semantic_chunking:
+                chunks = DocumentProcessor._chunk_semantically(
+                    DocumentProcessor._blocks_from_text(text)
+                )
+            else:
+                chunks = DocumentProcessor._chunk_text(text)
             return text, chunks, {}
 
         # Build full text from paragraphs (includes [FN:X] markers)
         full_text = '\n'.join(p['text'] for p in paragraphs)
 
         # Build chunks from full text
-        chunks = DocumentProcessor._chunk_text(full_text)
+        if settings.semantic_chunking:
+            blocks = [
+                {
+                    "text": p["text"],
+                    "is_heading": p["is_heading"],
+                    "level": p["level"],
+                }
+                for p in paragraphs
+            ]
+            chunks = DocumentProcessor._chunk_semantically(blocks)
+        else:
+            chunks = DocumentProcessor._chunk_text(full_text)
 
         # Match footnote refs to chunks by scanning for [FN:X] markers
         chunk_footnote_map = {}
@@ -344,6 +389,151 @@ class DocumentProcessor:
             chunks.append(chunk.strip())
             start = end - overlap
 
+        return [c for c in chunks if c]
+
+    # ------------------------------------------------------------------
+    # Semantic chunking (behind settings.semantic_chunking):
+    # split on heading/paragraph boundaries, prefix each chunk with a
+    # 'Section: ...' breadcrumb, and apply overlap only inside a section —
+    # never across a heading boundary.
+    # ------------------------------------------------------------------
+
+    HEADING_PREFIX_RE = re.compile(
+        r'^\s*(?:\d{1,2}[.)]\s+|[IVX]{1,5}[.)]\s+)'
+    )
+
+    @staticmethod
+    def _looks_like_heading(line: str) -> bool:
+        """Heuristic heading detection for plain text (PDF/TXT/JSON)."""
+        line = line.strip()
+        if not line or len(line) > 70:
+            return False
+        if line.endswith(('.', ',', ';')):
+            return False
+        if line.isupper():
+            return True
+        if DocumentProcessor.HEADING_PREFIX_RE.match(line):
+            return True
+        words = re.findall(r"[A-Za-z0-9']+", line)
+        if not words:
+            return False
+        # Title Case: every alphabetic word starts uppercase, 2-8 words.
+        return 2 <= len(words) <= 8 and all(
+            not w.isalpha() or w[0].isupper() for w in words
+        )
+
+    @staticmethod
+    def _blocks_from_text(text: str) -> List[Dict]:
+        """Split plain text into line blocks with heading flags."""
+        blocks = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            blocks.append({
+                "text": line,
+                "is_heading": DocumentProcessor._looks_like_heading(line),
+                "level": 1,
+            })
+        return blocks
+
+    @staticmethod
+    def _extract_docx_blocks(file_path: str) -> List[Dict]:
+        """Split a DOCX into paragraph blocks, using Word heading styles
+        (Heading 1/2/...) first and the text heuristic as fallback."""
+        if DocxDocument is None:
+            raise ImportError("python-docx is not installed")
+        doc = DocxDocument(file_path)
+        blocks = []
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                continue
+            style = (para.style.name or "") if para.style else ""
+            m = re.search(r"Heading\s*(\d+)", style, re.IGNORECASE)
+            if m:
+                blocks.append({
+                    "text": text,
+                    "is_heading": True,
+                    "level": int(m.group(1)),
+                })
+            else:
+                blocks.append({
+                    "text": text,
+                    "is_heading": DocumentProcessor._looks_like_heading(text),
+                    "level": 1,
+                })
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    t = cell.text.strip()
+                    if t:
+                        blocks.append({
+                            "text": t,
+                            "is_heading": False,
+                            "level": 1,
+                        })
+        return blocks
+
+    @staticmethod
+    def _chunk_semantically(
+        blocks: List[Dict],
+        chunk_size: int = None,
+        overlap: int = None,
+    ) -> List[str]:
+        """Group blocks into sections by heading, then chunk inside each
+        section. Overlap is applied only within a section (related blocks);
+        sections are never mixed. Every chunk is prefixed with a
+        'Section: ...' breadcrumb so retrieved chunks are self-contained."""
+        if chunk_size is None:
+            chunk_size = DocumentProcessor.CHUNK_SIZE
+        if overlap is None:
+            overlap = DocumentProcessor.OVERLAP
+
+        chunks: List[str] = []
+        stack: List[Tuple[int, str]] = []  # (level, heading text)
+        pending: List[str] = []
+        prev_was_heading = False
+
+        def breadcrumb() -> str:
+            return " > ".join(t for _, t in stack)
+
+        def flush() -> None:
+            if not pending:
+                return
+            section_text = "\n\n".join(pending)
+            pending.clear()
+            prefix = f"Section: {breadcrumb()}\n\n" if stack else ""
+            if len(section_text) <= chunk_size:
+                chunks.append((prefix + section_text).strip())
+            else:
+                # Long section: sliding window with overlap, but only ever
+                # within this same section — the breadcrumb keeps chunks
+                # self-contained and boundaries intact.
+                pieces = DocumentProcessor._chunk_text(
+                    section_text, chunk_size, overlap
+                )
+                chunks.extend((prefix + p).strip() for p in pieces)
+
+        for block in blocks:
+            text = (block.get("text") or "").strip()
+            if not text:
+                continue
+            if block.get("is_heading"):
+                flush()
+                level = int(block.get("level") or 1)
+                if not prev_was_heading:
+                    # A heading that follows body text starts a new section:
+                    # pop same-or-deeper headings.
+                    while stack and stack[-1][0] >= level:
+                        stack.pop()
+                # Consecutive headings nest (title line -> subheading).
+                stack.append((level, text))
+                prev_was_heading = True
+            else:
+                pending.append(text)
+                prev_was_heading = False
+        flush()
         return [c for c in chunks if c]
 
     @staticmethod

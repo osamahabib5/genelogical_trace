@@ -17,6 +17,7 @@ from retrieval_service import RetrievalService
 from llm_service import llm_service
 from rag_logging import rag_event_context, step_timer, estimate_llm_cost, deepseek_pricing_rate
 from document_processor import DocumentProcessor
+from answer_verifier import verify_answer
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,6 +83,13 @@ SMALL_TALK_PATTERNS = [
 # Minimum similarity for a retrieved chunk to be considered relevant enough
 # to show as a source.
 RELEVANCE_THRESHOLD = 0.35
+
+# Returned when the answer verifier rejects a draft as unsupported.
+HONESTY_REFUSAL_MESSAGE = (
+    "I could not verify this answer against the retrieved documents, so I "
+    "am declining to state it. The information needed to answer this "
+    "question may not be in the uploaded documents."
+)
 
 
 def is_small_talk(query: str) -> bool:
@@ -205,21 +213,71 @@ async def ask_chatbot(
 
             with step_timer(event, "llm answer generation") as llm_step:
                 response, usage = llm_service.generate_response_with_usage(query, context)
+            generation_mode = getattr(llm_service, "last_reasoning_mode", None)
             event["response_time_seconds"] = llm_step["seconds"]
             event["api_calls_made"].append(f"llm ({settings.llm_provider})")
-            event["final_response"] = response
             event["input_tokens"] = (usage or {}).get("prompt_tokens")
             event["output_tokens"] = (usage or {}).get("completion_tokens")
             event["input_cache_hit_tokens"] = (usage or {}).get("prompt_cache_hit_tokens")
             event["input_cache_miss_tokens"] = (usage or {}).get("prompt_cache_miss_tokens")
+
+            # Security guardrail: a second LLM pass audits the draft answer
+            # against the retrieved context. A draft ruled "unsupported"
+            # (hallucinated claims, or the model followed instructions
+            # embedded in the documents) is replaced by an honest refusal —
+            # the honesty rule enforced by the verifier agent.
+            if (
+                settings.verify_answers
+                and response
+                and not response.startswith("Error generating response")
+                and not is_small_talk(query)
+                and context
+            ):
+                with step_timer(event, "answer verification") as verify_step:
+                    verification = verify_answer(query, response, context)
+                verify_step["verdict"] = verification.get("verdict")
+                verify_step["reason"] = verification.get("reason")
+                v_usage = verification.get("usage") or {}
+                verify_step["input_tokens"] = v_usage.get("prompt_tokens")
+                verify_step["output_tokens"] = v_usage.get("completion_tokens")
+                verify_step["estimated_cost_usd"] = estimate_llm_cost(
+                    provider=settings.llm_provider,
+                    model=llm_service.get_active_model_name(),
+                    input_tokens=v_usage.get("prompt_tokens"),
+                    output_tokens=v_usage.get("completion_tokens"),
+                    input_cache_hit_tokens=v_usage.get("prompt_cache_hit_tokens"),
+                    input_cache_miss_tokens=v_usage.get("prompt_cache_miss_tokens"),
+                )
+                event["tools_called"].append("AnswerVerifier.verify_answer")
+                event["api_calls_made"].append(f"llm verifier ({settings.llm_provider})")
+
+                verdict = verification.get("verdict")
+                if verdict == "unsupported":
+                    logger.warning(
+                        "Answer verifier REJECTED draft answer: %s",
+                        verification.get("reason"),
+                    )
+                    response = HONESTY_REFUSAL_MESSAGE
+                elif verdict not in {"supported", "partial"}:
+                    # verifier_error -> fail open, keep the draft answer.
+                    logger.warning(
+                        "Answer verifier failed open: %s",
+                        verification.get("reason"),
+                    )
+                else:
+                    logger.info(
+                        "Answer verifier verdict=%s: %s",
+                        verdict,
+                        verification.get("reason"),
+                    )
+
+            event["final_response"] = response
             event["pricing_rate"] = (
                 deepseek_pricing_rate()
                 if settings.llm_provider == "deepseek"
                 else "flat"
             )
-            event["reasoning_mode"] = getattr(
-                llm_service, "last_reasoning_mode", None
-            )
+            event["reasoning_mode"] = generation_mode
             event["estimated_cost_usd"] = estimate_llm_cost(
                 provider=settings.llm_provider,
                 model=llm_service.get_active_model_name(),
@@ -296,6 +354,8 @@ def research_agent(request: AskRequest, db: Session = Depends(get_db)):
     query = request.query
     start_time = time.time()
 
+    print(f"\n=== LANGGRAPH RESEARCH RUN ===\nquery: {query}", flush=True)
+
     try:
         with rag_event_context("query", query_text=query) as event:
             from agent_orchestration import run_research  # lazy: langgraph optional
@@ -326,6 +386,13 @@ def research_agent(request: AskRequest, db: Session = Depends(get_db)):
                 input_cache_miss_tokens=event["input_cache_miss_tokens"],
             )
 
+        print(
+            f"[LANGGRAPH] done: status={result.get('status')} mode={result.get('mode')} "
+            f"verified={result.get('verified')} approved={result.get('approved')} "
+            f"tools={len(result.get('tool_log', []))} steps={len(result.get('step_log', []))}",
+            flush=True,
+        )
+
         return {
             "query": query,
             "response": result.get("answer", ""),
@@ -341,6 +408,7 @@ def research_agent(request: AskRequest, db: Session = Depends(get_db)):
         }
 
     except Exception as e:
+        print(f"[LANGGRAPH] agent failed ({e}) - falling back to direct RAG", flush=True)
         logger.warning(f"Research agent failed ({e}); falling back to direct RAG")
         embedding = embedding_service.embed_text(query)
         chunks = RetrievalService.search_similar_chunks(db, embedding, top_k=8)

@@ -30,6 +30,14 @@ from llm_service import llm_service, rule_based_classify, ReasoningMode
 
 logger = logging.getLogger(__name__)
 
+TOTAL_STEPS = 5
+
+
+def _console(step: int, name: str, detail: str) -> None:
+    """Print workflow progress and outputs to the backend console."""
+    print(f"\n[LANGGRAPH {step}/{TOTAL_STEPS}] {name}", flush=True)
+    print(f"    {detail}", flush=True)
+
 
 class ResearchState(TypedDict, total=False):
     query: str
@@ -79,6 +87,7 @@ def node_classify(state: ResearchState, config: RunnableConfig) -> ResearchState
     state.setdefault("tool_log", []).append("rule_based_classify")
     _record(state, "agent:classify", t0)
     logger.info("agent classify -> %s", state["mode"])
+    _console(1, "classify", f"query: '{state['query'][:120]}' -> reasoning mode: {state['mode']}")
     return state
 
 
@@ -99,6 +108,12 @@ def node_retrieve(state: ResearchState, config: RunnableConfig) -> ResearchState
     )
     _record(state, "agent:retrieve", t0)
     logger.info("agent retrieved %d chunks + %d ancestry records", len(chunks), len(ancestry))
+    _console(
+        2,
+        "retrieve",
+        f"embedded query, retrieved {len(chunks)} document chunks + "
+        f"{len(ancestry)} ancestry records ({state['step_log'][-1]['seconds']:.3f}s)",
+    )
     return state
 
 
@@ -119,6 +134,16 @@ def node_generate(state: ResearchState, config: RunnableConfig) -> ResearchState
     state.setdefault("tool_log", []).append("llm_service.generate_response_with_usage")
     _record(state, "agent:generate", t0)
     logger.info("agent generated answer (%s completion tokens so far)", state["budget_used"])
+    tokens = (usage or {}).get("completion_tokens", 0)
+    preview = (answer or "")[:160].replace("\n", " ")
+    _console(
+        3,
+        "generate",
+        f"drafted answer ({tokens} completion tokens, {state['budget_used']} used of "
+        f"{settings.agent_token_budget} budget):\n    '{preview}...'",
+    )
+    if state.get("note"):
+        _console(3, "generate (budget)", state["note"])
     return state
 
 
@@ -143,6 +168,8 @@ def node_verify(state: ResearchState, config: RunnableConfig) -> ResearchState:
     state.setdefault("tool_log", []).append("llm_service.citation_verifier")
     _record(state, "agent:verify", t0)
     logger.info("agent verification: verified=%s note=%s", state["verified"], state["verification_note"])
+    verdict = "OK - all citations supported" if state["verified"] else "UNSUPPORTED CITATIONS"
+    _console(4, "verify", f"citation audit verdict: {verdict}\n    note: {state['verification_note']}")
     return state
 
 
@@ -161,6 +188,13 @@ def node_approve(state: ResearchState, config: RunnableConfig) -> ResearchState:
     else:
         state["approved"] = True
     _record(state, "agent:approve", t0)
+    if settings.require_human_approval:
+        if state["approved"]:
+            _console(5, "approve", "human approval received: APPROVE")
+        else:
+            _console(5, "approve", "human approval received: REVISE -> regenerating answer")
+    else:
+        _console(5, "approve", "human approval disabled - auto-approved")
     return state
 
 

@@ -73,11 +73,25 @@ class Settings(BaseSettings):
     # True  = DeepSeek-powered agentic cleaning (slower, more thorough).
     use_agent_processing: bool = False
 
+    # Semantic chunking: split documents on headings/paragraph boundaries and
+    # prefix each chunk with a 'Section: ...' breadcrumb, with overlap only
+    # inside a section (never across a heading boundary).
+    # True  = semantic chunks; False = fixed 1000-char / 100-overlap sliding
+    # window (baseline). Requires re-uploading documents to take effect.
+    semantic_chunking: bool = False
+
     # Agent orchestration (LangGraph research agent, /api/queries/research)
     # Cumulative completion-token budget per research run.
     agent_token_budget: int = 4000
     # True pauses each research run for human approval before returning.
     require_human_approval: bool = False
+
+    # Security guardrail: run a second LLM pass after every /ask answer that
+    # audits the draft against the retrieved context and replaces
+    # unsupported (hallucinated / instruction-injected) answers with an
+    # honest refusal. Costs one extra LLM call per query; disable with
+    # VERIFY_ANSWERS=false in .env.
+    verify_answers: bool = True
 
     def __init__(self, **data):
         super().__init__(**data)

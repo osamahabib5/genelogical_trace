@@ -127,11 +127,23 @@ The application runs as plain local processes — no Docker:
 - **State & resume:** runs are checkpointed (`MemorySaver`, swap for a Postgres checkpointer in production) and keyed by `thread_id`; paused runs resume via `POST /api/queries/research/{thread_id}/approve`.
 - **Failure behavior:** the `/research` endpoint falls back to the direct RAG path if the agent errors, so callers always receive an answer. Every node records timings and tool calls into `rag_summary.json`.
 
+### 1.7 Document Chunking (fixed vs. semantic)
+- **Location:** `document_processor.py` (behind `SEMANTIC_CHUNKING` in `.env` / `config.py`).
+- **Fixed window (default):** `CHUNK_SIZE=1000` chars, `OVERLAP=100` — a sliding window over raw extracted text that may split mid-paragraph or across section boundaries.
+- **Semantic chunking (opt-in):** blocks are grouped into sections by heading (Word `Heading 1/2/3` styles for DOCX; a title-case / ALL-CAPS heuristic for PDF/TXT/JSON). Consecutive headings nest into breadcrumbs (`Fused Legacies > Life After the War`), long sections are split with overlap applied **only inside the section**, and every chunk is stored with a `Section: ...` breadcrumb prefix so retrieved chunks are self-contained.
+- Both paths feed the same embedding + storage pipeline; switching strategies requires re-uploading documents. `rag_evaluation.py` is the A/B instrument for comparing the two (see README).
+- **Measured result:** on the 2023 SOFAFEA journal (7 multi-hop/list eval questions), semantic chunking raised context precision 0.68 → 0.79 but dropped context recall 0.48 → 0.32 and average rubric score 1.29 → 1.14. The fixed window + overlap remains the default; `SEMANTIC_CHUNKING` ships as an opt-in experiment.
+
+### 1.8 RAG Evaluation (custom judges + ragas)
+- **Location:** `rag_evaluation.py` (repo root); results appended as JSON Lines to `app/backend/rag_evaluation_results.json`.
+- Runs every question in `sofafea_rag_eval.md` through the real pipeline and measures retrieval quality (context precision/recall, entity recall), generation quality (faithfulness, answer relevancy, semantic similarity, 0/1/2 rubric), plus per-step timings and cost.
+- `--evaluator custom|ragas|both` selects the judge layer: hand-rolled prompts (default) and/or the `ragas==0.2.15` library, which uses DeepSeek via its OpenAI-compatible API and local Ollama embeddings — judge calls and embeddings keep the same privacy/cost posture as production. `--tag` labels A/B variants, and full retrieved contexts are stored per question so both judge layers score the identical inputs.
+
 ## 2. Data Flow
 
 1. **Document ingestion:**
    - User uploads a file via frontend or curl.
-   - Backend route `POST /api/documents/upload` uses `DocumentProcessor` to extract text, break it into chunks, compute embeddings, and insert both the text and vectors into the database. Genealogical entities are also extracted and stored as `AncestryRecord` entries.
+   - Backend route `POST /api/documents/upload` uses `DocumentProcessor` to extract text, break it into chunks (fixed window or semantic, per `SEMANTIC_CHUNKING`), compute embeddings, and insert both the text and vectors into the database. Genealogical entities are also extracted and stored as `AncestryRecord` entries.
 
 2. **Semantic search and chatbot queries:**
    - When a query is received (`/search` or `/ask`), the backend obtains an embedding for the query text.

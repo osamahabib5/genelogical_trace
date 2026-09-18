@@ -32,15 +32,20 @@ class DataCleaningTool(BaseTool):
 
     def _run(self, data: str) -> str:
         """Clean the provided data"""
+        print(f"[LANGCHAIN TOOL] data_cleaner called with {len(data)} chars of data")
         try:
             # Parse JSON if it's JSON data
             if data.strip().startswith('{') or data.strip().startswith('['):
                 parsed_data = json.loads(data)
-                return self._clean_json_data(parsed_data)
+                result = self._clean_json_data(parsed_data)
             else:
-                return self._clean_text_data(data)
+                result = self._clean_text_data(data)
+            print(f"[LANGCHAIN TOOL] data_cleaner output: {result[:150]}")
+            return result
         except json.JSONDecodeError:
-            return self._clean_text_data(data)
+            result = self._clean_text_data(data)
+            print(f"[LANGCHAIN TOOL] data_cleaner output: {result[:150]}")
+            return result
 
     def _clean_text_data(self, text: str) -> str:
         """Clean text data by normalizing formatting and extracting entities"""
@@ -127,6 +132,7 @@ class DatabaseStorageTool(BaseTool):
 
     def _run(self, cleaned_data: str, document_id: int) -> str:
         """Store the cleaned data in the database"""
+        print(f"[LANGCHAIN TOOL] database_storage storing data for document {document_id}")
         try:
             db = SessionLocal()
             try:
@@ -145,6 +151,7 @@ class DatabaseStorageTool(BaseTool):
                             self._store_person_record(db, item, document_id)
 
                 db.commit()
+                print(f"[LANGCHAIN TOOL] database_storage committed data for document {document_id}")
                 return f"Successfully stored cleaned data for document {document_id}"
 
             finally:
@@ -182,6 +189,7 @@ class DataQualityAssessmentTool(BaseTool):
 
     def _run(self, data: str) -> str:
         """Assess data quality"""
+        print(f"[LANGCHAIN TOOL] quality_assessor assessing {len(data)} chars of data")
         assessment = {
             'quality_score': 0,
             'issues': [],
@@ -224,6 +232,10 @@ class DataQualityAssessmentTool(BaseTool):
         else:
             assessment['recommendations'].append('Low quality data - requires manual review')
 
+        print(
+            f"[LANGCHAIN TOOL] quality_assessor result: score={assessment['quality_score']}, "
+            f"issues={len(assessment['issues'])}, recommendations={len(assessment['recommendations'])}"
+        )
         return json.dumps(assessment, indent=2)
 
 
@@ -358,10 +370,17 @@ Thought: {agent_scratchpad}
 
             # Run the agent
             logger.info(f"Agent processing document {document_id} ({len(content)} chars)...")
+            print(f"\n=== LANGCHAIN AGENT RUN: document {document_id} ===\ninput preview: {content[:300]}")
             result = await self.executor.ainvoke({
                 "input": f"Process this genealogical data and store it in the database for document {document_id}:\n\n{content}"
             })
             logger.info(f"Agent finished document {document_id}: {str(result.get('output', ''))[:200]}")
+
+            # Show every tool the agent called and what it observed
+            for i, (action, observation) in enumerate(result.get("intermediate_steps", []), 1):
+                print(f"[LANGCHAIN AGENT] step {i}: tool='{action.tool}' input={str(action.tool_input)[:120]}")
+                print(f"[LANGCHAIN AGENT] step {i}: observation={str(observation)[:200]}")
+            print(f"[LANGCHAIN AGENT] final output: {str(result.get('output', ''))[:300]}")
 
             return {
                 "success": True,

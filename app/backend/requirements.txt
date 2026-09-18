@@ -24,3 +24,6 @@ aiofiles>=24.1.0
 pgvector>=0.3.6
 lxml>=6.0.0
 groq>=0.9.0
+# RAG evaluation with the ragas library (optional judge layer in rag_evaluation.py)
+ragas==0.2.15
+langchain-ollama>=0.3.0

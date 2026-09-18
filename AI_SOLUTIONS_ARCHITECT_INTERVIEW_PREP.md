@@ -30,24 +30,24 @@ Questions and sample answers built around the **Genealogy Ancestry Chatbot** pro
 
 ## 1. "Walk me through the solution you built."
 
-> I built a retrieval-augmented generation (RAG) platform for genealogical research. Documents are uploaded through a React UI to a FastAPI backend, which extracts text, chunks it into ~500-character pieces with 50-character overlap, and generates 768-dimension embeddings using a local Ollama model. Chunks and embeddings go into Supabase PostgreSQL with pgvector. When a user asks a question, I embed the query, run a vector similarity search across document chunks and extracted person records, assemble the top results into a prompt, and have DeepSeek answer strictly from that context with citations. The whole pipeline is instrumented: every step is timed, token usage and dollar cost are logged per query, and I added safeguards like retry-and-fail-loudly on embedding failures.
+> I built a retrieval-augmented generation (RAG) platform for genealogical research. Documents are uploaded through a React UI to a FastAPI backend, which extracts text, chunks it into 1,000-character pieces with 100-character overlap, and generates 768-dimension embeddings using a local Ollama model. Chunks and embeddings go into Supabase PostgreSQL with pgvector. When a user asks a question, I embed the query, run a vector similarity search across document chunks and extracted person records, assemble the top results into a prompt, and have DeepSeek answer strictly from that context with citations. The whole pipeline is instrumented: every step is timed, token usage and dollar cost are logged per query, and I added safeguards like retry-and-fail-loudly on embedding failures, prompt-injection defenses, and a post-generation verifier that enforces the honesty rule.
 
 ---
 
 ## 2. "Explain your RAG pipeline end-to-end and the design decisions behind each stage."
 
-> **Ingestion:** I support PDF, DOCX, TXT, and JSON. DOCX files get special handling — footnotes are extracted and linked to the chunks they belong to, which matters for a research product where citations are the core value. Chunk size (500 chars / 50 overlap) balances context richness against retrieval precision.
+> **Ingestion:** I support PDF, DOCX, TXT, and JSON. DOCX files get special handling — footnotes are extracted and linked to the chunks they belong to, which matters for a research product where citations are the core value. Chunk size (1000 chars / 100 overlap) balances context richness against retrieval precision. I also built heading-aware semantic chunking behind a `SEMANTIC_CHUNKING` flag and A/B tested it with my eval harness: precision rose 0.68 → 0.79, but recall fell 0.48 → 0.32 and rubric score 1.29 → 1.14, so I kept the fixed window — the harness proved overlap wasn't the problem.
 > **Embedding:** Local Ollama `nomic-embed-text` (768-dim) keeps data private and costs zero. The abstraction layer (`EmbeddingService`) lets the same pipeline run against OpenAI or Azure Foundry if a customer needs a managed model — but the vector dimension must stay consistent with the schema.
 > **Retrieval:** pgvector cosine similarity, top-8 chunks plus top-5 extracted person records, combined with a lightweight keyword filter extracted from the query (capitalized names) to nudge retrieval toward named entities.
 > **Generation:** DeepSeek with thinking mode. I added a rule-based classifier that maps each query to a reasoning effort — `low` for factoid questions, `high` for comparisons, `max` for multi-step research questions — defaulting to `low`. This directly trades cost and latency against answer depth per query.
-> **Guardrails:** the system prompt forces the model to answer only from provided context and to cite footnotes. Off-topic queries (greetings, "what's my name") skip retrieval entirely and return no sources.
+> **Guardrails:** retrieved text is wrapped in escaped `<retrieved_document>` delimiters and the system prompt treats tag contents strictly as data, so a document can't smuggle instructions into the prompt. After generation, `answer_verifier.py` runs a second LLM pass that audits the draft against the retrieved context and replaces unsupported answers with an honest refusal. Off-topic queries (greetings, "what's my name") skip retrieval entirely and return no sources.
 
 ---
 
 ## 3. "How do you evaluate whether this RAG system is working? What metrics do you track?"
 
 > I'd evaluate in four layers:
-> - **Retrieval quality:** build a golden dataset of ~50–100 questions with known-relevant chunks and measure hit-rate@k, MRR, and recall@k. I already log the top retrieved chunks' similarity scores per query, so offline analysis is easy.
+> - **Retrieval quality:** I built `rag_evaluation.py`, which runs a 23-question golden eval set (SOFAFEA journal questions with gold answers) through the real pipeline and measures context precision/recall, context entity recall, faithfulness, answer relevancy, and rubric score vs. the gold answer — logged per question to `rag_evaluation_results.json`. The remaining piece is a CI job that fails the build when these regress.
 > - **Generation quality:** faithfulness (does the answer match the retrieved context, not hallucinate), citation accuracy (do footnote references actually support the claim), and answer relevance. LLM-as-judge plus spot human review by a domain expert.
 > - **Operational metrics:** per-step latency from `rag_summary.json` (embed, retrieval, LLM), end-to-end p50/p95, token usage, and USD cost per query — including peak vs. off-peak DeepSeek pricing and prompt-cache hit/miss splits.
 > - **Business metrics:** user satisfaction, query answer rate, and cost per successful research session.
@@ -71,7 +71,7 @@ Questions and sample answers built around the **Genealogy Ancestry Chatbot** pro
 > - **Re-ranking:** a cross-encoder re-ranker on top-50 candidates to lift precision on hard queries.
 > - **Query expansion/rewriting:** use the LLM to rewrite ambiguous queries and detect the person/event being asked about before embedding.
 > - **Async ingestion:** move upload processing to a task queue (Celery/RQ or a queue in Postgres) so large uploads don't block the API worker; store progress and let the user query documents that are already indexed.
-> - **Evaluation harness:** golden dataset, CI job that fails when retrieval metrics regress.
+> - **Evaluation harness:** partially built — `rag_evaluation.py` runs the 23-question SOFAFEA eval set end-to-end with LLM-judged retrieval and generation metrics; what's left is the CI gate that blocks merges on metric regressions.
 > - **Caching:** Redis for embeddings and frequent answers; LLM response cache with semantic dedup.
 > - **Better entity extraction:** replace regex with an NER model (spaCy or an LLM extraction pass) and build an explicit family-relationship graph (Neo4j) instead of pairwise `related_to` rows.
 
@@ -103,15 +103,19 @@ I can answer from two production-style systems I built:
 > - **Azure Blob Storage** for document attachments linked back to records.
 > - Supporting cloud/data tooling I also wrote: Azure DLS2 export, free-tier cost checks, incremental loads, and a scripted backup database.
 
-### 6d. Security roadmap for the RAG chatbot
+### 6d. Security in the RAG chatbot — implemented vs. roadmap
 
-> - **Secrets:** keys live in `.env` today; production moves them to a secret manager (cloud KMS/Vault) with rotation.
-> - **AuthN/AuthZ:** the chatbot is currently unauthenticated — apply the same JWT + role model as the admin panel, plus Supabase RLS as defense-in-depth.
-> - **Upload safety:** extension *and* magic-byte validation, sandboxed parsing, malware scanning (size limits and CORS allow-listing already exist).
-> - **Prompt injection:** treat retrieved document text strictly as data — delimit it and instruct the model to ignore directives found inside documents.
-> - **Privacy:** encryption at rest, TLS in transit, retention/deletion policies that cascade from documents to chunks and embeddings, PII redaction in logs.
-> - **API hardening:** rate limiting, request size limits, and audit logging of every query/file action (already implemented via `rag_summary.json`).
-> - **Supply chain:** pinned dependencies, image scanning, and a locked-down CI/CD pipeline.
+> **Implemented:**
+> - **Prompt-injection defense:** every retrieved chunk is wrapped in `<retrieved_document>` tags and angle brackets in the content are HTML-escaped, so a document cannot inject its own closing tag or fake instructions; the system prompt's SECURITY RULES treat tag contents strictly as data, and a runtime assertion rejects caller-supplied prompts carrying the data-plane delimiters.
+> - **Verifier-enforced honesty rule:** `answer_verifier.py` runs a second LLM pass after every `/ask` (gated by `VERIFY_ANSWERS=true`) and replaces drafts with unsupported claims — hallucination or obeyed injected instructions — with an honest refusal. Verdict, reason, tokens, and cost land in `rag_summary.json` (~2s and ~$0.0027 per query measured).
+> - **Upload safety:** extension whitelist *plus* magic-byte checks (PDF `%PDF-`, DOCX `PK`, UTF-8 for TXT/JSON), empty-file rejection, size cap, UUID-prefixed filenames.
+> **Roadmap:**
+> - **AuthN/AuthZ:** the chatbot API is unauthenticated today — apply the same JWT + role model as the admin panel, plus Supabase RLS.
+> - **Upload hardening:** sandboxed parsing and malware scanning.
+> - **Secrets:** move keys from `.env` to a secret manager with rotation.
+> - **Privacy:** encryption at rest, TLS in transit, retention/deletion policies, PII redaction in logs.
+> - **API hardening:** rate limiting and CORS tightening (`main.py` currently allows all origins).
+> - **Supply chain:** pinned dependencies, image scanning, locked-down CI/CD.
 
 ### 6e. Real-time data replication to a backup database (Azure PostgreSQL)
 
@@ -132,7 +136,7 @@ I can answer from two production-style systems I built:
 
 > - **Router agent:** classifies each query (factoid vs. comparison vs. multi-hop vs. off-topic) and routes it — I already do a rule-based version for reasoning effort; an LLM router generalizes it and can also pick retrieval strategies.
 > - **Research agent (ReAct with tools):** tools = `search_documents`, `get_footnotes`, `get_person_records`, `query_history`. The agent iterates: search → read → refine query → search again, then synthesizes an answer. Good for "trace the Perkins family across three documents" questions.
-> - **Citation-verifier agent:** after the answer agent responds, a second agent checks each footnote claim against the source chunk and removes or flags unsupported statements — directly improves trust in a genealogy product.
+> - **Citation-verifier agent:** implemented — `answer_verifier.py` audits every `/ask` answer against the retrieved context and forces an honest refusal on unsupported claims, and the LangGraph research agent's `verify` node audits footnote citations with a human-in-the-loop gate.
 > - **Document-intake agent:** already partially built — a LangChain agent with tools for quality assessment, cleaning/normalization, and database storage, so unstructured uploads self-normalize into person records.
 > - **Human-in-the-loop researcher copilot:** the agent proposes the answer, shows its evidence chain, and asks the researcher to confirm uncertain links before writing them into the family tree.
 > I'd also implement **guardrails as tools** (allowed-topic checks) and **fallback routing** (DeepSeek → Groq on failure/rate-limit, with a circuit breaker).
@@ -207,7 +211,9 @@ I can answer from two production-style systems I built:
 - Why cosine similarity? (Standard for embeddings; matches pgvector cosine ops index.)
 - What is prompt caching and why do you log it? (DeepSeek caches repeated prompt prefixes; hit/miss tokens are billed differently, so I log both and compute cost accordingly.)
 - Peak vs. off-peak pricing? (DeepSeek charges 2× during 01:00–04:00 and 06:00–10:00 UTC; my cost estimator uses the current bucket.)
-- How do you prevent hallucination? (Ground in retrieved context only, force citations, honesty instruction, planned citation-verifier agent.)
+- How do you prevent hallucination? (Ground in retrieved context only, force citations, honesty instruction, and enforce it with `answer_verifier.py` — a second LLM pass that replaces unsupported answers with a refusal.)
+- How do you defend against prompt injection? (Retrieved text is delimited and escaped, treated strictly as data, prompts stay in code with a data-plane assertion, and the verifier catches the model if it obeys injected instructions.)
+- Fixed vs semantic chunking? (A/B tested with my harness: semantic raised precision 0.68→0.79 but cut recall 0.48→0.32 and rubric 1.29→1.14 — kept fixed 1000/100 as default; the flag stays for precision-sensitive corpora.)
 - Retrieval latency? (Indexed pgvector cosine search returns in hundreds of milliseconds; embedding the query dominates the pre-LLM time.)
 - What happens if Ollama is down? (Embedding batches retry once then raise — upload fails loudly; queries fall back to zero-vector embedding and the LLM answers without context rather than crashing the app.)
 - vGPU vs MIG vs passthrough? (Flexibility vs. partitioning vs. max throughput; chosen per workload isolation and SLA.)
@@ -226,7 +232,7 @@ I can answer from two production-style systems I built:
 
 ---
 
-*Tip: for each "what did you build" answer, have the code path ready to show — `routes/queries.py` (ask flow), `llm_service.py` (provider + classifier), `rag_logging.py` (observability), `embedding_service.py` (batching + retry), `test_embedding_batches_size.py` (benchmarking), and for security show the admin panel's `auth.py` (JWT + role guards), `database.py` (audit context), and the audit trigger SQL in `audit_logs_implementation.md`.*
+*Tip: for each "what did you build" answer, have the code path ready to show — `routes/queries.py` (ask flow), `llm_service.py` (provider + classifier + delimiters), `answer_verifier.py` (honesty verifier), `agent_orchestration.py` (LangGraph), `rag_logging.py` (observability), `embedding_service.py` (batching + retry), `rag_evaluation.py` (eval harness), `test_embedding_batches_size.py` (benchmarking), and for security show the admin panel's `auth.py` (JWT + role guards), `database.py` (audit context), and the audit trigger SQL in `audit_logs_implementation.md`.*
 
 ---
 

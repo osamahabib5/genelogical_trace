@@ -13,6 +13,7 @@ An AI-powered chatbot application for tracing African American genealogical ance
 🔍 **Document Processing**
 - Upload and process PDF, DOCX, TXT, and JSON documents
 - Automatic text extraction and chunking
+- **Semantic chunking option** (`SEMANTIC_CHUNKING=true`): split on headings/paragraph boundaries and prefix every chunk with a `Section: ...` breadcrumb, with overlap only inside a section — no mixing across heading boundaries
 - Footnote extraction and linking for DOCX documents
 - Support for journals and application templates
 
@@ -39,6 +40,12 @@ An AI-powered chatbot application for tracing African American genealogical ance
 - Chat interface with sources
 - Family tree visualization
 
+🛡️ **Security Guardrails**
+- Retrieved context wrapped in escaped `<retrieved_document>` delimiters — document text is treated strictly as data, never as instructions
+- Post-generation answer verification (`answer_verifier.py`): a second LLM pass audits every answer against the retrieved context and replaces unsupported (hallucinated) answers with an honest refusal
+- Upload defense-in-depth: extension whitelist + magic-byte validation + size cap
+- Honest refusals: answers not grounded in the documents are declined, never invented
+
 ## Prerequisites
 
 - Python 3.10+
@@ -64,6 +71,7 @@ genealogy_traceline/
 │   │   ├── embedding_service.py  # Embeddings generation
 │   │   ├── retrieval_service.py  # Vector search
 │   │   ├── llm_service.py      # LLM interactions (DeepSeek / Groq)
+│   │   ├── answer_verifier.py  # Post-generation honesty verifier (guardrail)
 │   │   ├── agent_orchestration.py  # LangGraph research agent (/research)
 │   │   ├── rag_logging.py      # Event logging: timings, tokens, cost
 │   │   └── routes/
@@ -85,6 +93,7 @@ genealogy_traceline/
 │       └── supabase_setup.sql  # Supabase PostgreSQL setup script
 ├── sources/                    # Sample documents
 ├── uploads/                    # Uploaded documents (created at runtime)
+├── rag_evaluation.py           # RAG evaluation pipeline (SOFAFEA eval set)
 └── test_embedding_batches_size.py  # Embedding batch-size benchmark
 ```
 
@@ -141,8 +150,17 @@ OLLAMA_EMBED_MODEL=nomic-embed-text
 # Texts per embedding HTTP request (default 128). 256-512 is the sweet spot
 # for upload speed on CPU-only Ollama machines.
 EMBED_BATCH_SIZE=128
+
+# Chunking strategy: true = semantic chunks with 'Section: ...' breadcrumbs
+# (re-upload documents to take effect); false = fixed 1000-char window / 100-overlap.
+SEMANTIC_CHUNKING=false
 # OPENAI_API_KEY=your-openai-api-key
 # OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+
+# Answer verification (security guardrail): a second LLM pass audits every
+# /ask answer against the retrieved context and replaces unsupported
+# (hallucinated / instruction-injected) answers with an honest refusal.
+VERIFY_ANSWERS=true
 
 # Frontend
 REACT_APP_API_URL=http://localhost:8000
@@ -229,6 +247,15 @@ The dimension must match the `vector(...)` column type in the Supabase schema (s
 
 Embeddings are generated in batches. `EMBED_BATCH_SIZE` (default 128) controls how many texts go into each embedding request — raise it to 256–512 to cut per-request overhead on slow machines. Failed batches are retried once and then raise an error instead of silently storing zero vectors.
 
+### Chunking strategies
+
+Two chunking strategies ship behind `SEMANTIC_CHUNKING` in `.env`:
+
+- **Fixed window (default):** `CHUNK_SIZE=1000` chars with `OVERLAP=100` — a sliding window that may cut mid-paragraph.
+- **Semantic (opt-in):** `SEMANTIC_CHUNKING=true` splits on heading boundaries (Word `Heading 1/2/3` styles in DOCX, or a title-case/ALL-CAPS heuristic for PDF/TXT/JSON). Consecutive headings nest into breadcrumbs (`Fused Legacies > Life After the War`), overlap is applied only *inside* a section, and each chunk is stored with a `Section: ...` breadcrumb prefix so retrieved chunks are self-contained. Switching requires re-uploading documents; evaluate the trade-off with `rag_evaluation.py` before enabling.
+
+**Measured A/B (harness, 7 multi-hop/list questions on the 2023 journal):** semantic chunking raised `context_precision` 0.68 → 0.79 but dropped `context_recall` 0.48 → 0.32 and average rubric score 1.29 → 1.14 (list-question recall fell hardest: Q15 1.0 → 0.0, Q17 1.0 → 0.63; Q16 improved 0 → 0.25). Verdict: for this corpus the fixed window + overlap wins on recall and rubric, so it remains the default — the flag stays for precision-sensitive corpora.
+
 ## Supabase Database Setup
 
 ### Connection String
@@ -283,7 +310,7 @@ Notes:
     http://localhost:8000/api/queries/search
   ```
 
-- **POST** `/api/queries/ask` - Chat with the genealogy bot
+- **POST** `/api/queries/ask` - Chat with the genealogy bot (answers are audited by the honesty verifier when `VERIFY_ANSWERS=true`)
   ```bash
   curl -X POST -H "Content-Type: application/json" \
     -d '{"query":"Tell me about African American soldiers in the Civil War"}' \
@@ -343,7 +370,7 @@ Notes:
 ### Document Chunks Table
 - `id`: Chunk ID
 - `document_id`: Reference to document
-- `chunk_text`: Text content (500 chars max)
+- `chunk_text`: Text content (1,000 chars with 100-char overlap)
 - `chunk_number`: Sequence number
 - `embedding`: Vector embedding (768 dimensions with Ollama; 1536 with OpenAI)
 
@@ -390,6 +417,22 @@ python test_embedding_batches_size.py
 ```
 
 This uploads `sources/ARHO_DEScendants_scrap.docx` with batch sizes 128/256/512/1024, records the per-step timings, deletes each test document, and writes a comparison table to `app/backend/embedding_batch_test_results.json`.
+
+To evaluate retrieval and generation quality against the golden eval set:
+
+```bash
+python rag_evaluation.py --document-title "2023 Journal SOFAFEA"
+```
+
+`rag_evaluation.py` runs the 23-question SOFAFEA eval set (`sofafea_rag_eval.md`) through the real `/ask` pipeline and appends per-question quality metrics to `app/backend/rag_evaluation_results.json`: context precision, retrieval precision@k, context recall, context entity recall, faithfulness, answer relevancy, rubric score vs. the gold answer, and the same timing/token/cost metrics as `rag_summary.json`. Use `--skip-judge` for deterministic-only metrics, `--questions Q1,Q12` for subsets, and `--document-title` to scope retrieval to one document.
+
+Two judge layers are available via `--evaluator`:
+
+- `--evaluator custom` (default): hand-rolled LLM-judge prompts plus deterministic metrics (entity recall, source match, footnote validity).
+- `--evaluator ragas`: the same metrics computed by the [ragas](https://docs.ragas.io/) library, using DeepSeek as the judge LLM (OpenAI-compatible wrapper) and local Ollama embeddings — a cross-validation of the custom judges.
+- `--evaluator both` computes both; `--tag` labels A/B variants.
+
+Sample 3-question RAGAS run (2023 journal, tag `ragas-3q-v2`): faithfulness 0.84, answer relevancy 0.93, context precision 0.67, context recall 0.56, answer semantic similarity 0.85. RAGAS issues ~5 judge calls per question (a few minutes per question with DeepSeek thinking enabled), so use `--questions` subsets for iterative work and full-set runs overnight.
 
 ## Agentic Research (LangGraph Orchestration)
 
@@ -470,12 +513,15 @@ REINDEX INDEX idx_ancestry_embedding;
 
 ## Security Notes
 
-- Never commit `.env` — keep API keys and the Supabase password out of version control.
-- Use a strong Supabase database password and rotate it regularly.
-- Store DeepSeek/Groq/OpenAI keys only in `.env` or a secret manager, never in code.
-- Enable HTTPS in production (e.g., behind a reverse proxy).
-- Restrict CORS origins in `main.py`.
-- Validate all file uploads.
+Implemented guardrails:
+
+- **Prompt-injection defense** (`llm_service.py`): every retrieved chunk is wrapped in `<retrieved_document>` tags and angle brackets inside the content are HTML-escaped, so documents cannot inject their own closing tag or fake instructions. The system prompt treats tag contents strictly as data, and a runtime assertion keeps prompts outside the retrievable data plane.
+- **Verifier-enforced honesty rule** (`answer_verifier.py`): every `/ask` answer is audited by a second LLM pass against the retrieved context; drafts with unsupported claims (hallucination or injected instructions) are replaced with an honest refusal. Toggle with `VERIFY_ANSWERS` (default `true`); verdicts, reasons, tokens, and cost are logged in `rag_summary.json`.
+- **Upload validation** (`routes/documents.py`): extension whitelist plus magic-byte checks (PDF `%PDF-`, DOCX `PK`, UTF-8 for TXT/JSON), empty-file rejection, size cap, UUID-prefixed filenames.
+
+Still on the roadmap: API authentication/RBAC, rate limiting, CORS tightening (`main.py` currently allows all origins), sandboxed document parsing, malware scanning, and secrets management.
+
+Also: never commit `.env`; use a strong Supabase database password; enable HTTPS in production behind a reverse proxy.
 
 ## Contributing
 

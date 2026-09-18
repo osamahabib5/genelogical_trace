@@ -29,6 +29,23 @@ def get_db():
         db.close()
 
 
+def _content_matches_extension(filename: str, content: bytes) -> bool:
+    """Magic-byte check: reject files whose content does not match their
+    declared extension (defense-in-depth on top of the extension whitelist)."""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".pdf":
+        return content.startswith(b"%PDF-")
+    if ext == ".docx":
+        return content[:4] == b"PK\x03\x04"
+    if ext in {".txt", ".json"}:
+        try:
+            content.decode("utf-8")
+            return True
+        except UnicodeDecodeError:
+            return False
+    return False
+
+
 def _store_chunks_and_footnotes(db, document_id, chunks, embeddings, chunk_footnote_map):
     """Store embedded chunks and link extracted footnotes to their chunks."""
     chunk_objs = []
@@ -220,6 +237,22 @@ async def upload_document(
             if file_ext not in {'.pdf', '.docx', '.txt', '.json'}:
                 raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
 
+            content = await file.read()
+
+            if not content:
+                raise HTTPException(status_code=400, detail="Empty file")
+
+            if len(content) > settings.max_upload_size:
+                raise HTTPException(status_code=413, detail="File too large")
+
+            # Defense-in-depth on top of the extension whitelist: reject
+            # files whose magic bytes don't match their declared type.
+            if not _content_matches_extension(file.filename, content):
+                raise HTTPException(
+                    status_code=400,
+                    detail="File content does not match its extension (magic-byte check failed)",
+                )
+
             os.makedirs(settings.upload_directory, exist_ok=True)
 
             unique_filename = f"{uuid.uuid4()}_{file.filename}"
@@ -227,12 +260,7 @@ async def upload_document(
 
             with step_timer(event, "save file to disk"):
                 with open(file_path, "wb") as f:
-                    content = await file.read()
                     f.write(content)
-
-            if len(content) > settings.max_upload_size:
-                os.remove(file_path)
-                raise HTTPException(status_code=413, detail="File too large")
 
             # ── Create document record ──
             processing_method = "agentic_ai" if settings.use_agent_processing else "direct_pipeline"
