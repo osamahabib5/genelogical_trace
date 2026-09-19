@@ -33,6 +33,43 @@ Second-round questions are deeper, scenario-driven, and whiteboard-heavy. These 
 > Three failure classes, and I can show each in my logs: (1) **Exact-name misses** — "J. Perkins" vs "Joshua Perkins"; embeddings are fuzzy, so exact spellings and abbreviations suffer. (2) **Cross-chunk answers** — a fact split across two 1,000-char chunks retrieves one but not the other. (3) **Ambiguous pronouns** — "his mother" retrieves nothing relevant.
 > Fixes in order of cost: hybrid retrieval (BM25 + vector with reciprocal rank fusion — pgvector is in Postgres, so I can add `tsvector` or OpenSearch without changing the pipeline); a cross-encoder re-ranker over top-50 candidates; query rewriting by the LLM before embedding; and entity linking so a detected name forces a metadata-filtered search. I'd measure each with a golden dataset and keep the change that wins on recall@k without hurting p95 latency — which is exactly what my chunking A/B taught me: semantic chunking raised precision 0.68→0.79 but cut recall 0.48→0.32 and rubric 1.29→1.14, so overlap wasn't the problem and I kept the fixed window.
 
+---
+
+## A/B Debrief: Semantic vs. Fixed-Window Chunking
+
+**What I tested (the semantic strategy)** — implemented in `document_processor.py` behind `SEMANTIC_CHUNKING`:
+- Split on heading boundaries: Word `Heading 1/2/3` styles for DOCX, plus a title-case / ALL-CAPS heuristic for PDF/TXT/JSON.
+- Consecutive headings nest into breadcrumbs (`Fused Legacies > Life After the War`; `Maine's Tobias Hill > Generation 1`).
+- Long sections are split with overlap applied **only inside the section** — never across a heading boundary.
+- Every chunk is stored with a `Section: ...` breadcrumb prefix, so retrieved chunks are self-contained.
+- On the 2023 journal this produced **233 chunks from 42 detected headings**, vs. **175 chunks** from the baseline.
+
+**The baseline** — fixed 1,000-char sliding window with 100-char overlap (the shipped default).
+
+**Protocol** — same 7 multi-hop/list questions (Q8–Q11, Q15–Q17), same DeepSeek judges, retrieval scoped to the 2023 journal (`--document-title "2023 Journal SOFAFEA"`), tagged `baseline` vs `semantic` in `rag_evaluation_results.json`.
+
+**Results:**
+
+| Metric | Fixed window | Semantic | Verdict |
+|---|---|---|---|
+| context_precision | 0.68 | **0.79** | semantic wins (+15%) |
+| retrieval_precision@k | 0.34 | 0.33 | tie |
+| context_recall | **0.48** | 0.32 | fixed wins (−34%) |
+| context_entity_recall | **0.77** | 0.49 | fixed wins |
+| faithfulness | **0.84** | 0.80 | fixed wins |
+| answer relevancy | **0.92** | 0.90 | ≈ tie |
+| answer semantic similarity | **0.84** | 0.82 | ≈ tie |
+| rubric score (avg 0–2) | **1.29** | 1.14 | fixed wins |
+| rubric distribution (0/1/2) | 1/3/3 | 0/6/1 | fixed wins (fewer perfect 2s) |
+
+**Per-question casualties and winners:** Q9 was identical (perfect in both). Q16 *improved* (recall 0→0.25, rubric 0→1). But Q15 collapsed (recall 1.0→0.0, rubric 2→1) and Q17 regressed (recall 1.0→0.63, rubric 2→1) — the list questions lost completeness when the Chart/table content was re-segmented.
+
+**Verdict: do not ship.** The decision rule was "ship if recall and rubric rise without hurting precision" — they fell. The fixed 1000/100 window stays the default, and `SEMANTIC_CHUNKING` ships as an opt-in experiment for precision-sensitive corpora.
+
+**What the harness taught me:** precision and recall pull in opposite directions when you change chunking — breadcrumbs made retrieved chunks better *labeled* but the re-segmentation hid facts the overlap used to carry. Overlap wasn't the problem, so the next experiments are retrieval-side (hybrid BM25+vector, reranking), not chunking-side. And the whole decision cost ~30 minutes of eval runs instead of a rewrite — the harness made the experiment falsifiable.
+
+---
+
 ## 3. "How would you prove this system is actually good — with numbers?"
 
 > Four layers, and the first two already have a working harness — `rag_evaluation.py` runs a 23-question golden eval set (SOFAFEA journal questions with gold answers and expected sources) through the real `/ask` pipeline and logs per-question metrics to `rag_evaluation_results.json`. **Retrieval:** context precision (are relevant chunks ranked high), retrieval precision@k, context recall (did retrieval surface everything the gold answer needs), and context entity recall (key entities present in the retrieved context). **Generation:** faithfulness (is every claim in the answer supported by the context), answer relevancy, answer↔gold semantic similarity, and a 0/1/2 rubric score against the gold answer — LLM-as-judge plus deterministic checks. Every LLM-judged metric has two independent implementations — my hand-rolled judge prompts and the `ragas` library running the same metrics through DeepSeek + local Ollama (`--evaluator ragas`); on a 3-question sample they agree on direction while differing in strictness (ragas faithfulness 0.84, relevancy 0.93, precision 0.67, recall 0.56), which is exactly the cross-validation I want before trusting any judge. **Operations:** per-step latency percentiles, token usage, and USD cost per query from my event log — including peak vs off-peak and cache hit/miss splits. **Business:** answer rate and cost per research session. The key design decision: I instrumented *before* optimizing, which is how I found the 2.2s embedding overhead and the thinking-mode cost problem — so I could prove each fix with before/after numbers, not vibes. What's left is the CI gate that runs the harness weekly and blocks merges on regressions.
