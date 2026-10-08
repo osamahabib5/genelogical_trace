@@ -15,9 +15,10 @@ This document provides a high‑level description of the main components and dat
 - **Services:**
   - `document_processor.py` handles ingestion, text extraction, chunking and entity extraction.
   - `embedding_service.py` wraps the embeddings API — local Ollama `nomic-embed-text` by default, with OpenAI (`text-embedding-3-small`) and Azure Foundry as alternatives.
-  - `retrieval_service.py` provides vector similarity searches against pgvector tables plus specialized ancestry queries.
+  - `retrieval_service.py` provides vector similarity searches against pgvector tables plus specialized ancestry queries. It also fuses vector cosine with Postgres full-text search (BM25-style `ts_rank`) via Reciprocal Rank Fusion, gated by `HYBRID_SEARCH` (see §1.10).
   - `llm_service.py` is responsible for generating chatbot responses using the selected language model — **DeepSeek** by default (primary), with **Groq** as secondary.
   - `agent_orchestration.py` builds the multi-step LangGraph research agent (`/research`) on top of the services above — classify → retrieve → generate → verify → approve.
+  - `answer_verifier.py` runs the post-generation honesty audit on `/ask` — a second LLM pass that replaces unsupported (hallucinated / instruction-injected) drafts with an honest refusal.
 - **Database models:**
   - Defined in `database.py` (e.g. `Document`, `Chunk`, `AncestryRecord`, `QueryHistory`).
   - Database connection via SQLAlchemy and a `SessionLocal` factory.
@@ -55,6 +56,7 @@ erDiagram
         text chunk_text
         int chunk_number
         vector embedding
+        tsvector search_vector
     }
 
     ancestry_data {
@@ -71,6 +73,7 @@ erDiagram
         text raw_text
         vector embedding
         timestamp extraction_date
+        tsvector search_vector
     }
 
     query_history {
@@ -139,6 +142,19 @@ The application runs as plain local processes — no Docker:
 - Runs every question in `sofafea_rag_eval.md` through the real pipeline and measures retrieval quality (context precision/recall, entity recall), generation quality (faithfulness, answer relevancy, semantic similarity, 0/1/2 rubric), plus per-step timings and cost.
 - `--evaluator custom|ragas|both` selects the judge layer: hand-rolled prompts (default) and/or the `ragas==0.2.15` library, which uses DeepSeek via its OpenAI-compatible API and local Ollama embeddings — judge calls and embeddings keep the same privacy/cost posture as production. `--tag` labels A/B variants, and full retrieved contexts are stored per question so both judge layers score the identical inputs.
 
+### 1.9 Security Guardrails
+- **Prompt-injection defense (`llm_service.py`):** retrieved chunk and ancestry text is injected only into the user message, wrapped in `<retrieved_document>` delimiters, with angle brackets HTML-escaped so documents cannot inject their own closing tag or fake instructions. The system prompt's SECURITY RULES treat tag contents strictly as data, and a runtime assertion rejects caller-supplied prompts that carry the data-plane delimiters.
+- **Verifier-enforced honesty rule (`answer_verifier.py`):** after every `/ask` generation (gated by `VERIFY_ANSWERS=true`), a second LLM pass audits each claim against the retrieved context (`supported` / `partial` / `unsupported`); `unsupported` drafts are replaced with an honest refusal, the verifier fails open on its own errors, and verdict / reason / tokens / cost land in `rag_summary.json` (~2s, ~$0.0027 per query measured).
+- **Upload validation (`routes/documents.py`):** extension whitelist plus magic-byte checks (PDF `%PDF-`, DOCX `PK`, UTF-8 for TXT/JSON), empty-file rejection, size cap, and UUID-prefixed filenames.
+
+### 1.10 Hybrid Retrieval (vector + full-text, RRF)
+- **Why:** pure vector cosine misses exact names, abbreviations (`J. Perkins` vs `Joshua Perkins`), and keyword-critical queries; a lexical leg fixes those without adding infrastructure.
+- **What changed:** `document_chunks` and `ancestry_data` gained a generated `tsvector` column (`search_vector`, `to_tsvector('english', ...)`) with a GIN index — declared in `database/supabase_setup.sql` (including an idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` block for existing databases) and in the SQLAlchemy models so fresh `create_all` installs get it too.
+- **How:** `RetrievalService.search_hybrid_chunks()` / `search_hybrid_ancestry()` run the vector cosine query and a `websearch_to_tsquery` full-text query, then fuse the two ranked lists with Reciprocal Rank Fusion — score = Σ 1 / (k + rank) with `RRF_K=60` — so a chunk ranked high in both lists wins. `/search`, `/ask`, and the LangGraph `retrieve` node call the hybrid methods when `HYBRID_SEARCH=true`.
+- **Graceful rollout:** if the full-text leg errors (e.g. the migration hasn't run yet), the service logs a warning and falls back to vector-only, so the flag never breaks retrieval.
+- **Trade-offs:** plus — zero new infrastructure (Postgres FTS lives in the same Supabase instance), ~1–5 ms added latency, no token cost, ingestion unchanged (generated column). Minus — `ts_rank` is term-frequency based, not literal BM25 (true BM25 would need OpenSearch/ParadeDB), and both legs share one database, so hybrid cannot mask a broken vector index.
+- **Decision (measured):** A/B on the 23-question set fixed the exact-name questions (Q13 rubric 0→2) and lifted faithfulness 0.856→0.923, but regressed multi-hop/numeric questions (Q11, Q19, Q22) and average rubric 1.609→1.478 — so the default is vector-only (`HYBRID_SEARCH=false`); the hybrid path stays available behind the flag. Next: weighted RRF, query-type gating, then a cross-encoder reranker.
+
 ## 2. Data Flow
 
 1. **Document ingestion:**
@@ -147,8 +163,8 @@ The application runs as plain local processes — no Docker:
 
 2. **Semantic search and chatbot queries:**
    - When a query is received (`/search` or `/ask`), the backend obtains an embedding for the query text.
-   - `RetrievalService` executes vector similarity queries on the `document_chunks` and/or ancestry tables to find top‑k matches.
-   - For `/ask` endpoints, the top results are packaged as context and passed to `llm_service.generate_response()`, which composes a prompt and posts it to the LLM. The resulting response and context count are returned to the frontend.
+   - `RetrievalService` executes vector similarity queries on the `document_chunks` and/or ancestry tables to find top‑k matches. With `HYBRID_SEARCH=true` it also runs a Postgres full-text query and fuses the two ranked lists via Reciprocal Rank Fusion (see §1.10).
+   - For `/ask` endpoints, the top results are packaged as delimited, escaped context (`<retrieved_document>` blocks) and passed to `llm_service.generate_response()`, which composes a prompt and posts it to the LLM. With `VERIFY_ANSWERS=true`, `answer_verifier.py` then audits the draft against the retrieved context and may replace unsupported answers with an honest refusal before the response is returned to the frontend.
    - All queries are optionally logged in `QueryHistory`.
 
 3. **Agentic research (`/research`):**

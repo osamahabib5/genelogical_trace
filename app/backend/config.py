@@ -68,6 +68,19 @@ class Settings(BaseSettings):
     max_tokens: int = 1500
     max_results: int = 8
 
+    # Hybrid retrieval: fuse vector cosine + Postgres full-text search
+    # (BM25-style keyword ranking) using Reciprocal Rank Fusion. Requires the
+    # generated tsvector columns + GIN indexes in database/supabase_setup.sql;
+    # the retrieval service falls back to vector-only if that leg is missing.
+    # Measured on the 23-question eval set: hybrid fixed exact-name questions
+    # (Q13 rubric 0->2) but regressed multi-hop/numeric ones (Q22 2->0) and
+    # average rubric 1.609 -> 1.478, so the default is vector-only until
+    # weighted RRF / query-type gating land.
+    hybrid_search: bool = False
+    # RRF smoothing constant: a chunk's fused score is the sum of
+    # 1 / (rrf_k + rank) across the vector and keyword ranked lists.
+    rrf_k: int = 60
+
     # Document processing pipeline.
     # False = direct regex + Ollama embeddings (fast, no LLM calls on upload).
     # True  = DeepSeek-powered agentic cleaning (slower, more thorough).

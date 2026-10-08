@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS public.document_chunks (
     -- IMPORTANT: dimension must match your embedding model.
     --   Ollama nomic-embed-text       -> 768 (default)
     --   OpenAI text-embedding-3-small -> 1536
-    embedding    vector(768)
+    embedding    vector(768),
+    -- Full-text search column for hybrid retrieval (BM25-style keyword
+    -- ranking fused with vector cosine via Reciprocal Rank Fusion).
+    search_vector tsvector GENERATED ALWAYS AS
+        (to_tsvector('english', coalesce(chunk_text, ''))) STORED
 );
 
 -- Ancestry information table for structured genealogical data
@@ -55,7 +59,10 @@ CREATE TABLE IF NOT EXISTS public.ancestry_data (
     related_to      VARCHAR(255),
     raw_text        TEXT,
     embedding       vector(768),
-    extraction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    extraction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Full-text search over name + raw text for hybrid retrieval.
+    search_vector tsvector GENERATED ALWAYS AS
+        (to_tsvector('english', coalesce(person_name, '') || ' ' || coalesce(raw_text, ''))) STORED
 );
 
 -- Document footnotes table
@@ -97,6 +104,10 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON public.document_chunks
 CREATE INDEX IF NOT EXISTS idx_ancestry_embedding ON public.ancestry_data
   USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
+-- Full-text search indexes (hybrid retrieval)
+CREATE INDEX IF NOT EXISTS idx_chunks_search_vector ON public.document_chunks USING GIN (search_vector);
+CREATE INDEX IF NOT EXISTS idx_ancestry_search_vector ON public.ancestry_data USING GIN (search_vector);
+
 -- Alternative for larger collections: HNSW (pgvector >= 0.5 on Supabase)
 -- CREATE INDEX idx_chunks_embedding ON public.document_chunks
 --   USING hnsw (embedding vector_cosine_ops);
@@ -118,6 +129,23 @@ ORDER BY q.query_date DESC;
 -- ------------------------------------------------------------
 -- DROP VIEW IF EXISTS public.recent_ancestry_queries CASCADE;
 -- DROP TABLE IF EXISTS public.query_history CASCADE;
+
+-- ------------------------------------------------------------
+-- 6. Hybrid retrieval — full-text search columns (idempotent)
+--    Run this block on an EXISTING database to add the generated
+--    tsvector columns + GIN indexes used by hybrid search. Fresh
+--    databases get these columns from the CREATE TABLE statements above.
+-- ------------------------------------------------------------
+ALTER TABLE public.document_chunks
+  ADD COLUMN IF NOT EXISTS search_vector tsvector
+  GENERATED ALWAYS AS (to_tsvector('english', coalesce(chunk_text, ''))) STORED;
+
+ALTER TABLE public.ancestry_data
+  ADD COLUMN IF NOT EXISTS search_vector tsvector
+  GENERATED ALWAYS AS (to_tsvector('english', coalesce(person_name, '') || ' ' || coalesce(raw_text, ''))) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_chunks_search_vector ON public.document_chunks USING GIN (search_vector);
+CREATE INDEX IF NOT EXISTS idx_ancestry_search_vector ON public.ancestry_data USING GIN (search_vector);
 -- DROP TABLE IF EXISTS public.document_footnotes CASCADE;
 -- DROP TABLE IF EXISTS public.ancestry_data CASCADE;
 -- DROP TABLE IF EXISTS public.document_chunks CASCADE;

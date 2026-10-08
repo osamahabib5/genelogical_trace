@@ -15,7 +15,7 @@ from database import SessionLocal, Document, DocumentChunk, AncestryData, Docume
 from document_processor import DocumentProcessor
 from embedding_service import embedding_service
 from config import settings
-from rag_logging import rag_event_context, log_rag_event, step_timer
+from rag_logging import rag_event_context, step_timer
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -343,23 +343,24 @@ async def get_document(document_id: int, db: Session = Depends(get_db)):
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
-        log_rag_event(
-            "file_view",
-            file_name=document.file_name,
-            final_response=f"Viewed document {document_id}: {document.title}"
-        )
-        return {
-            "id": document.id,
-            "title": document.title,
-            "type": document.document_type,
-            "filename": document.file_name,
-            "upload_date": document.upload_date.isoformat() if document.upload_date else None,
-            "content_preview": document.content[:500] if document.content else None,
-            "chunks": len(document.chunks),
-            "footnotes": len(document.footnotes),
-            "ancestry_records": len(document.ancestry_data),
-            "metadata": document.doc_metadata
-        }
+
+        with rag_event_context("file_view", file_name=document.file_name) as event:
+            with step_timer(event, "load document relationships"):
+                result = {
+                    "id": document.id,
+                    "title": document.title,
+                    "type": document.document_type,
+                    "filename": document.file_name,
+                    "upload_date": document.upload_date.isoformat() if document.upload_date else None,
+                    "content_preview": document.content[:500] if document.content else None,
+                    "chunks": len(document.chunks),
+                    "footnotes": len(document.footnotes),
+                    "ancestry_records": len(document.ancestry_data),
+                    "metadata": document.doc_metadata
+                }
+            event["final_response"] = f"Viewed document {document_id}: {document.title}"
+
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -392,16 +393,18 @@ async def delete_document(document_id: int, db: Session = Depends(get_db)):
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
+
         file_path = os.path.join(settings.upload_directory, document.file_name)
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        db.delete(document)
-        db.commit()
-        log_rag_event(
-            "file_delete",
-            file_name=document.file_name,
-            final_response=f"Deleted document {document_id}"
-        )
+
+        with rag_event_context("file_delete", file_name=document.file_name) as event:
+            with step_timer(event, "remove file from disk"):
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            with step_timer(event, "delete document + chunks"):
+                db.delete(document)
+                db.commit()
+            event["final_response"] = f"Deleted document {document_id}"
+
         return {"success": True, "message": "Document deleted successfully"}
     except HTTPException:
         raise

@@ -5,8 +5,9 @@ RAG evaluation pipeline for the SOFAFEA eval set (sofafea_rag_eval.md).
 For every question in the eval set this script runs the REAL production
 pipeline (same services and parameters as POST /api/queries/ask):
 
-    embed query -> keyword extraction -> pgvector retrieval (8 chunks +
-    5 ancestry records) -> LLM answer generation
+    embed query -> keyword extraction -> retrieval (hybrid FTS+vector when
+    HYBRID_SEARCH=true, else vector-only; 8 chunks + 5 ancestry records) ->
+    LLM answer generation
 
 It then measures, per question:
 
@@ -548,25 +549,43 @@ def run_single(
         {"step": "keyword extraction", "seconds": round(time.perf_counter() - t0, 4)}
     )
 
-    # --- 3. Vector retrieval ------------------------------------------------
+    # --- 3. Retrieval (hybrid FTS+vector or vector-only, per settings) -----
     t0 = time.perf_counter()
-    if title_filter:
-        candidates = RetrievalService.search_similar_chunks(
-            db, q_embedding, top_k=TOP_K_CHUNKS * 3, keyword=keyword
+    hybrid = getattr(settings, "hybrid_search", False)
+    if hybrid:
+        if title_filter:
+            candidates = RetrievalService.search_hybrid_chunks(
+                db, q_embedding, q, top_k=TOP_K_CHUNKS * 3
+            )
+            chunks = [
+                c for c in candidates
+                if title_filter.lower() in (c.get("document_title") or "").lower()
+            ][:TOP_K_CHUNKS]
+        else:
+            chunks = RetrievalService.search_hybrid_chunks(
+                db, q_embedding, q, top_k=TOP_K_CHUNKS
+            )
+        ancestry = RetrievalService.search_hybrid_ancestry(
+            db, q_embedding, q, top_k=TOP_K_ANCESTRY
         )
-        chunks = [
-            c for c in candidates
-            if title_filter.lower() in (c.get("document_title") or "").lower()
-        ][:TOP_K_CHUNKS]
     else:
-        chunks = RetrievalService.search_similar_chunks(
-            db, q_embedding, top_k=TOP_K_CHUNKS, keyword=keyword
+        if title_filter:
+            candidates = RetrievalService.search_similar_chunks(
+                db, q_embedding, top_k=TOP_K_CHUNKS * 3, keyword=keyword
+            )
+            chunks = [
+                c for c in candidates
+                if title_filter.lower() in (c.get("document_title") or "").lower()
+            ][:TOP_K_CHUNKS]
+        else:
+            chunks = RetrievalService.search_similar_chunks(
+                db, q_embedding, top_k=TOP_K_CHUNKS, keyword=keyword
+            )
+        ancestry = RetrievalService.search_ancestry_data(
+            db, q_embedding, top_k=TOP_K_ANCESTRY
         )
-    ancestry = RetrievalService.search_ancestry_data(
-        db, q_embedding, top_k=TOP_K_ANCESTRY
-    )
     steps.append(
-        {"step": "vector retrieval", "seconds": round(time.perf_counter() - t0, 4)}
+        {"step": "retrieval", "seconds": round(time.perf_counter() - t0, 4)}
     )
     context = list(chunks) + list(ancestry)
 
@@ -822,8 +841,14 @@ def run_single(
             duration_seconds=duration,
             steps_taken=steps,
             tools_called=[
-                "rag_evaluation.RetrievalService.search_similar_chunks",
-                "rag_evaluation.RetrievalService.search_ancestry_data",
+                (
+                    "rag_evaluation.RetrievalService.search_hybrid_chunks"
+                    if hybrid else "rag_evaluation.RetrievalService.search_similar_chunks"
+                ),
+                (
+                    "rag_evaluation.RetrievalService.search_hybrid_ancestry"
+                    if hybrid else "rag_evaluation.RetrievalService.search_ancestry_data"
+                ),
             ],
             api_calls_made=[
                 f"embedding ({settings.embedding_provider})",

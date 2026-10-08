@@ -20,6 +20,7 @@ An AI-powered chatbot application for tracing African American genealogical ance
 💾 **Vector Database Storage**
 - Supabase PostgreSQL with the pgvector extension for semantic search
 - Stores document chunks and extracted genealogical data
+- **Hybrid retrieval** (opt-in, `HYBRID_SEARCH=true`): vector cosine + Postgres full-text search (`tsvector` + GIN) fused with Reciprocal Rank Fusion — catches exact-name and keyword matches that pure vector search misses, with a vector-only fallback. Measured on the 23-question eval set it fixed the exact-name questions but regressed multi-hop/numeric ones (avg rubric 1.609 → 1.478), so the default is vector-only; flip the flag for name-heavy corpora.
 - Efficient similarity-based retrieval
 
 🤖 **AI-Powered Chatbot**
@@ -69,7 +70,7 @@ genealogy_traceline/
 │   │   ├── database.py         # SQLAlchemy models
 │   │   ├── document_processor.py # Document processing
 │   │   ├── embedding_service.py  # Embeddings generation
-│   │   ├── retrieval_service.py  # Vector search
+│   │   ├── retrieval_service.py  # Hybrid (FTS + vector) search
 │   │   ├── llm_service.py      # LLM interactions (DeepSeek / Groq)
 │   │   ├── answer_verifier.py  # Post-generation honesty verifier (guardrail)
 │   │   ├── agent_orchestration.py  # LangGraph research agent (/research)
@@ -88,9 +89,8 @@ genealogy_traceline/
 │   │           ├── DocumentUpload.js
 │   │           ├── DocumentList.js
 │   │           └── FamilyTree.js
-│   └── database/
-│       ├── init.sql            # SQL schema reference
-│       └── supabase_setup.sql  # Supabase PostgreSQL setup script
+├── database/
+│   └── supabase_setup.sql      # Supabase setup: tables, indexes, hybrid FTS migration
 ├── sources/                    # Sample documents
 ├── uploads/                    # Uploaded documents (created at runtime)
 ├── rag_evaluation.py           # RAG evaluation pipeline (SOFAFEA eval set)
@@ -154,6 +154,16 @@ EMBED_BATCH_SIZE=128
 # Chunking strategy: true = semantic chunks with 'Section: ...' breadcrumbs
 # (re-upload documents to take effect); false = fixed 1000-char window / 100-overlap.
 SEMANTIC_CHUNKING=false
+
+# Hybrid retrieval: fuse vector cosine with Postgres full-text search
+# (BM25-style) via Reciprocal Rank Fusion. Requires the generated tsvector
+# columns + GIN indexes in database/supabase_setup.sql (see section 6 for
+# existing databases); retrieval falls back to vector-only if missing.
+# Measured on the eval set: fixes exact-name queries but regresses
+# multi-hop/numeric ones, so the default is false (vector-only).
+HYBRID_SEARCH=false
+RRF_K=60
+
 # OPENAI_API_KEY=your-openai-api-key
 # OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 
@@ -173,7 +183,7 @@ REACT_APP_API_URL=http://localhost:8000
 3. Copy your connection string: **Dashboard → Project Settings → Database → Connection string → Session pooler** (port `5432`) or **Direct connection**. Paste it into `.env` as `DATABASE_URL`.
 4. Open **Dashboard → SQL Editor → New query**, paste the contents of `database/supabase_setup.sql`, and run it.
 
-The script creates the `vector` extension, all application tables, indexes, and a helper view.
+The script creates the `vector` extension, all application tables, indexes, and a helper view. If your database was set up before hybrid retrieval was added, run the idempotent block at the bottom of the script (section 6) to add the `search_vector` full-text columns and GIN indexes to existing tables.
 
 ### 4. Start the Backend
 

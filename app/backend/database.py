@@ -2,8 +2,8 @@
 Database models and session management
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, create_engine
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, Computed, Index, Integer, String, Text, DateTime, ForeignKey, create_engine
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, Session, sessionmaker
 from datetime import datetime
@@ -36,12 +36,20 @@ class Document(Base):
 
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
+    __table_args__ = (
+        Index("idx_chunks_search_vector", "search_vector", postgresql_using="gin"),
+    )
 
     id = Column(Integer, primary_key=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
     chunk_text = Column(Text, nullable=False)
     chunk_number = Column(Integer)
     embedding = Column(Vector(768))
+    # Full-text search column kept in sync by Postgres (hybrid retrieval).
+    search_vector = Column(
+        TSVECTOR,
+        Computed("to_tsvector('english', coalesce(chunk_text, ''))", persisted=True),
+    )
 
     # Relationships
     document = relationship("Document", back_populates="chunks")
@@ -78,6 +86,9 @@ class DocumentFootnote(Base):
 
 class AncestryData(Base):
     __tablename__ = "ancestry_data"
+    __table_args__ = (
+        Index("idx_ancestry_search_vector", "search_vector", postgresql_using="gin"),
+    )
 
     id = Column(Integer, primary_key=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
@@ -92,6 +103,14 @@ class AncestryData(Base):
     raw_text = Column(Text)
     embedding = Column(Vector(768))
     extraction_date = Column(DateTime, default=datetime.utcnow)
+    # Full-text search over name + raw text (hybrid retrieval).
+    search_vector = Column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('english', coalesce(person_name, '') || ' ' || coalesce(raw_text, ''))",
+            persisted=True,
+        ),
+    )
 
     # Relationships
     document = relationship("Document", back_populates="ancestry_data")

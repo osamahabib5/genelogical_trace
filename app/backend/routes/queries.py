@@ -128,13 +128,25 @@ async def search_ancestry(
             }
             with step_timer(event, "vector retrieval"):
                 if include_documents:
-                    results["document_chunks"] = RetrievalService.search_similar_chunks(
-                        db, query_embedding, keyword=keyword
-                    )
-                    event["tools_called"].append("RetrievalService.search_similar_chunks")
+                    if settings.hybrid_search:
+                        results["document_chunks"] = RetrievalService.search_hybrid_chunks(
+                            db, query_embedding, query
+                        )
+                        event["tools_called"].append("RetrievalService.search_hybrid_chunks")
+                    else:
+                        results["document_chunks"] = RetrievalService.search_similar_chunks(
+                            db, query_embedding, keyword=keyword
+                        )
+                        event["tools_called"].append("RetrievalService.search_similar_chunks")
                 if include_ancestry_data:
-                    results["ancestry_records"] = RetrievalService.search_ancestry_data(db, query_embedding)
-                    event["tools_called"].append("RetrievalService.search_ancestry_data")
+                    if settings.hybrid_search:
+                        results["ancestry_records"] = RetrievalService.search_hybrid_ancestry(
+                            db, query_embedding, query
+                        )
+                        event["tools_called"].append("RetrievalService.search_hybrid_ancestry")
+                    else:
+                        results["ancestry_records"] = RetrievalService.search_ancestry_data(db, query_embedding)
+                        event["tools_called"].append("RetrievalService.search_ancestry_data")
             with step_timer(event, "entity extraction"):
                 results["entities"] = DocumentProcessor.extract_genealogical_entities(query)
             event["final_response"] = (
@@ -195,16 +207,28 @@ async def ask_chatbot(
 
                 if include_context:
                     with step_timer(event, "vector retrieval"):
-                        document_chunks = RetrievalService.search_similar_chunks(
-                            db, query_embedding, top_k=8, keyword=keyword
-                        )
-                        ancestry_records = RetrievalService.search_ancestry_data(
-                            db, query_embedding, top_k=5
-                        )
-                    event["tools_called"].extend([
-                        "RetrievalService.search_similar_chunks",
-                        "RetrievalService.search_ancestry_data",
-                    ])
+                        if settings.hybrid_search:
+                            document_chunks = RetrievalService.search_hybrid_chunks(
+                                db, query_embedding, query, top_k=8
+                            )
+                            ancestry_records = RetrievalService.search_hybrid_ancestry(
+                                db, query_embedding, query, top_k=5
+                            )
+                            event["tools_called"].extend([
+                                "RetrievalService.search_hybrid_chunks",
+                                "RetrievalService.search_hybrid_ancestry",
+                            ])
+                        else:
+                            document_chunks = RetrievalService.search_similar_chunks(
+                                db, query_embedding, top_k=8, keyword=keyword
+                            )
+                            ancestry_records = RetrievalService.search_ancestry_data(
+                                db, query_embedding, top_k=5
+                            )
+                            event["tools_called"].extend([
+                                "RetrievalService.search_similar_chunks",
+                                "RetrievalService.search_ancestry_data",
+                            ])
                     with step_timer(event, "context assembly"):
                         context.extend(document_chunks)
                         context.extend(ancestry_records)
@@ -411,7 +435,11 @@ def research_agent(request: AskRequest, db: Session = Depends(get_db)):
         print(f"[LANGGRAPH] agent failed ({e}) - falling back to direct RAG", flush=True)
         logger.warning(f"Research agent failed ({e}); falling back to direct RAG")
         embedding = embedding_service.embed_text(query)
-        chunks = RetrievalService.search_similar_chunks(db, embedding, top_k=8)
+        chunks = (
+            RetrievalService.search_hybrid_chunks(db, embedding, query, top_k=8)
+            if settings.hybrid_search
+            else RetrievalService.search_similar_chunks(db, embedding, top_k=8)
+        )
         response, _ = llm_service.generate_response_with_usage(query, chunks)
         return {
             "query": query,

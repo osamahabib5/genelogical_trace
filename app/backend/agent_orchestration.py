@@ -96,14 +96,18 @@ def node_retrieve(state: ResearchState, config: RunnableConfig) -> ResearchState
     t0 = time.perf_counter()
     db = _db(config)
     embedding = embedding_service.embed_text(state["query"])
-    chunks = RetrievalService.search_similar_chunks(db, embedding, top_k=8)
-    ancestry = RetrievalService.search_ancestry_data(db, embedding, top_k=5)
+    if settings.hybrid_search:
+        chunks = RetrievalService.search_hybrid_chunks(db, embedding, state["query"], top_k=8)
+        ancestry = RetrievalService.search_hybrid_ancestry(db, embedding, state["query"], top_k=5)
+    else:
+        chunks = RetrievalService.search_similar_chunks(db, embedding, top_k=8)
+        ancestry = RetrievalService.search_ancestry_data(db, embedding, top_k=5)
     state["context"] = chunks + ancestry
     state.setdefault("tool_log", []).extend(
         [
             "embedding_service.embed_text",
-            "RetrievalService.search_similar_chunks",
-            "RetrievalService.search_ancestry_data",
+            "RetrievalService.search_hybrid_chunks" if settings.hybrid_search else "RetrievalService.search_similar_chunks",
+            "RetrievalService.search_hybrid_ancestry" if settings.hybrid_search else "RetrievalService.search_ancestry_data",
         ]
     )
     _record(state, "agent:retrieve", t0)
