@@ -122,13 +122,14 @@ The application runs as plain local processes — no Docker:
 - **Location:** `app/backend/agent_orchestration.py`
 - A stateful LangGraph workflow (`classify → retrieve → generate → verify → approve`) that reuses `embedding_service`, `RetrievalService`, `llm_service`, and the rule-based classifier.
 - **Nodes:**
-  - `classify` — picks reasoning effort via `rule_based_classify` (default `high` on the research path).
-  - `retrieve` — embeds the query and searches chunks + person records.
+  - `classify` — picks reasoning effort via `rule_based_classify` (default `high` on the research path) and selects retrieval approach. Simple entity/fact queries are routed to keyword lookup; comparison, relationship, and multi-step questions use similarity retrieval.
+  - `retrieve` — embeds the query and applies the selected strategy. Keyword lookup extracts a named entity (such as `F. Adam`) and searches document text/person names, with vector fallback. Similarity uses vector retrieval, or vector + Postgres full-text RRF when `HYBRID_SEARCH=true`.
   - `generate` — drafts the answer and enforces a cumulative token budget (`AGENT_TOKEN_BUDGET`).
   - `verify` — a second LLM pass audits every footnote citation against the retrieved context.
   - `approve` — human-in-the-loop gate; with `REQUIRE_HUMAN_APPROVAL=false` it auto-approves. Rejected drafts loop back to `generate`.
 - **State & resume:** runs are checkpointed (`MemorySaver`, swap for a Postgres checkpointer in production) and keyed by `thread_id`; paused runs resume via `POST /api/queries/research/{thread_id}/approve`.
 - **Failure behavior:** the `/research` endpoint falls back to the direct RAG path if the agent errors, so callers always receive an answer. Every node records timings and tool calls into `rag_summary.json`.
+- **Routing implementation:** `classify_retrieval_approach()` and `extract_keyword_target()` in `llm_service.py` populate `retrieval_approach` / `retrieval_keyword` in graph state; `node_retrieve()` in `agent_orchestration.py` selects the matching RetrievalService calls and records the route in call logs.
 
 ### 1.7 Document Chunking (fixed vs. semantic)
 - **Location:** `document_processor.py` (behind `SEMANTIC_CHUNKING` in `.env` / `config.py`).

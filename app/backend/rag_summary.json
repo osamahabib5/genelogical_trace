@@ -2322,4 +2322,266 @@
     "estimated_cost_usd": 0.003604,
     "pricing_rate": "off-peak",
     "reasoning_mode": "low"
+}{
+    "timestamp_edt": "2026-10-11 22:16:19 EDT",
+    "action_type": "query",
+    "duration_seconds": 4.698588,
+    "file_name": "",
+    "query_text": "Hello",
+    "steps_taken": [
+        {
+            "step": "skip embedding + retrieval (small talk)",
+            "seconds": 2e-06
+        },
+        {
+            "step": "llm answer generation",
+            "seconds": 4.686374
+        }
+    ],
+    "tools_called": [],
+    "api_calls_made": [
+        "llm (deepseek)"
+    ],
+    "final_response": "The answer is not in the documents provided. No relevant context was found to address your question.",
+    "response_time_seconds": 4.686374,
+    "input_tokens": 290,
+    "output_tokens": 59,
+    "input_cache_hit_tokens": 256,
+    "input_cache_miss_tokens": 34,
+    "estimated_cost_usd": 0.00029,
+    "pricing_rate": "peak",
+    "reasoning_mode": "low"
+}
+{
+    "timestamp_edt": "2026-10-11 22:16:30 EDT",
+    "action_type": "query",
+    "duration_seconds": 3.736905,
+    "file_name": "",
+    "query_text": "How are you?",
+    "steps_taken": [
+        {
+            "step": "skip embedding + retrieval (small talk)",
+            "seconds": 2e-06
+        },
+        {
+            "step": "llm answer generation",
+            "seconds": 3.73627
+        }
+    ],
+    "tools_called": [],
+    "api_calls_made": [
+        "llm (deepseek)"
+    ],
+    "final_response": "I'm doing well, thank you! However, the provided context contains no relevant documents, so I don't have specific ancestral information to share. How can I assist you with your African American ancestry research?",
+    "response_time_seconds": 3.73627,
+    "input_tokens": 293,
+    "output_tokens": 209,
+    "input_cache_hit_tokens": 256,
+    "input_cache_miss_tokens": 37,
+    "estimated_cost_usd": 0.000888,
+    "pricing_rate": "peak",
+    "reasoning_mode": "low"
+}
+{
+    "timestamp_edt": "2026-10-11 22:16:53 EDT",
+    "action_type": "query",
+    "duration_seconds": 9.430865,
+    "file_name": "",
+    "query_text": "What's the day today?",
+    "steps_taken": [
+        {
+            "step": "embed query",
+            "seconds": 4.289692
+        },
+        {
+            "step": "keyword extraction",
+            "seconds": 0.000265
+        },
+        {
+            "step": "vector retrieval",
+            "seconds": 0.240046
+        },
+        {
+            "step": "context assembly",
+            "seconds": 3e-06
+        },
+        {
+            "step": "llm answer generation",
+            "seconds": 2.452339
+        },
+        {
+            "step": "answer verification",
+            "seconds": 2.445564,
+            "verdict": "supported",
+            "reason": "The draft correctly refuses because the retrieved documents contain no current date information.",
+            "input_tokens": 950,
+            "output_tokens": 90,
+            "estimated_cost_usd": 0.001284
+        }
+    ],
+    "tools_called": [
+        "RetrievalService.search_similar_chunks",
+        "RetrievalService.search_ancestry_data",
+        "AnswerVerifier.verify_answer"
+    ],
+    "api_calls_made": [
+        "embedding (ollama)",
+        "llm (deepseek)",
+        "llm verifier (deepseek)"
+    ],
+    "final_response": "The answer to \"What's the day today?\" is not in the documents. The provided context contains genealogical records and historical excerpts, but no current date information.",
+    "response_time_seconds": 2.452339,
+    "input_tokens": 941,
+    "output_tokens": 75,
+    "input_cache_hit_tokens": 256,
+    "input_cache_miss_tokens": 685,
+    "estimated_cost_usd": 0.001212,
+    "pricing_rate": "peak",
+    "reasoning_mode": "low"
+}
+{
+    "timestamp_edt": "2026-10-12 13:15:34 EDT",
+    "action_type": "query",
+    "duration_seconds": 12.714406,
+    "file_name": "",
+    "query_text": "Who is Joshua 'Old Jock' Perkins and where was he born?",
+    "steps_taken": [
+        {
+            "step": "embed query",
+            "seconds": 2.621756
+        },
+        {
+            "step": "keyword extraction",
+            "seconds": 0.000334
+        },
+        {
+            "step": "vector retrieval",
+            "seconds": 0.95246
+        },
+        {
+            "step": "context assembly",
+            "seconds": 4e-06
+        },
+        {
+            "step": "llm answer generation",
+            "seconds": 5.782887
+        },
+        {
+            "step": "answer verification",
+            "seconds": 3.355513,
+            "verdict": "supported",
+            "reason": "All factual claims in the draft answer are directly grounded in the retrieved document excerpts.",
+            "input_tokens": 3563,
+            "output_tokens": 272,
+            "estimated_cost_usd": 0.002727
+        }
+    ],
+    "tools_called": [
+        "RetrievalService.search_similar_chunks",
+        "RetrievalService.search_ancestry_data",
+        "AnswerVerifier.verify_answer"
+    ],
+    "api_calls_made": [
+        "embedding (ollama)",
+        "llm (deepseek)",
+        "llm verifier (deepseek)"
+    ],
+    "final_response": "Joshua “Old Jock” Perkins was born in Accomack County, Virginia in 1732 to Esther Perkins, a “free moletto” woman. At the age of two, he was indentured to an Accomack plantation owner. In records created during his life, Joshua was referred to as either a “mulatto” or “free person of color”; after his death he was called a “Negro.” He was nicknamed “Old Jock” during the Perkins v. White trial, likely to distinguish him from his descendants named Joshua. [footnote 3][footnote 4][footnote 5][footnote 6]",
+    "response_time_seconds": 5.782887,
+    "input_tokens": 3453,
+    "output_tokens": 352,
+    "input_cache_hit_tokens": 256,
+    "input_cache_miss_tokens": 3197,
+    "estimated_cost_usd": 0.002813,
+    "pricing_rate": "off-peak",
+    "reasoning_mode": "low"
+}
+{
+    "timestamp_edt": "2026-10-12 16:49:51 EDT",
+    "action_type": "query",
+    "duration_seconds": 4.936601,
+    "file_name": "",
+    "query_text": "Hi. How are you?",
+    "steps_taken": [
+        {
+            "step": "skip embedding + retrieval (small talk)",
+            "seconds": 4e-06
+        },
+        {
+            "step": "llm answer generation",
+            "seconds": 4.93401
+        }
+    ],
+    "tools_called": [],
+    "api_calls_made": [
+        "llm (deepseek)"
+    ],
+    "final_response": "I'm doing well, thank you for asking. However, no relevant genealogical context or documents were provided, so I’m unable to answer a research question from the provided materials. Please share document excerpts if you have a specific ancestry question.",
+    "response_time_seconds": 4.93401,
+    "input_tokens": 295,
+    "output_tokens": 245,
+    "input_cache_hit_tokens": 256,
+    "input_cache_miss_tokens": 39,
+    "estimated_cost_usd": 0.000516,
+    "pricing_rate": "off-peak",
+    "reasoning_mode": "low"
+}
+{
+    "timestamp_edt": "2026-10-12 17:38:44 EDT",
+    "action_type": "query",
+    "duration_seconds": 5.038438,
+    "file_name": "",
+    "query_text": "Hi. How's everything?",
+    "steps_taken": [
+        {
+            "step": "skip embedding + retrieval (small talk)",
+            "seconds": 2e-06
+        },
+        {
+            "step": "llm answer generation",
+            "seconds": 5.037343
+        }
+    ],
+    "tools_called": [],
+    "api_calls_made": [
+        "llm (deepseek)"
+    ],
+    "final_response": "I'm doing well, thank you! However, there is no relevant historical document context provided for me to reference. If you have a question about African American ancestry research, please share it along with any document excerpts you'd like me to analyze.",
+    "response_time_seconds": 5.037343,
+    "input_tokens": 295,
+    "output_tokens": 221,
+    "input_cache_hit_tokens": 256,
+    "input_cache_miss_tokens": 39,
+    "estimated_cost_usd": 0.000469,
+    "pricing_rate": "off-peak",
+    "reasoning_mode": "low"
+}{
+    "timestamp_edt": "2026-10-13 13:49:50 EDT",
+    "action_type": "query",
+    "duration_seconds": 4.409513,
+    "file_name": "",
+    "query_text": "Hi. How are you?",
+    "steps_taken": [
+        {
+            "step": "skip embedding + retrieval (small talk)",
+            "seconds": 1e-06
+        },
+        {
+            "step": "llm answer generation",
+            "seconds": 4.402632
+        }
+    ],
+    "tools_called": [],
+    "api_calls_made": [
+        "llm (deepseek)"
+    ],
+    "final_response": "I'm doing well, thank you! How can I help you with your African American ancestry research today?",
+    "response_time_seconds": 4.402632,
+    "input_tokens": 295,
+    "output_tokens": 101,
+    "input_cache_hit_tokens": 256,
+    "input_cache_miss_tokens": 39,
+    "estimated_cost_usd": 0.000231,
+    "pricing_rate": "off-peak",
+    "reasoning_mode": "low"
 }

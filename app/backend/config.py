@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     # (Q13 rubric 0->2) but regressed multi-hop/numeric ones (Q22 2->0) and
     # average rubric 1.609 -> 1.478, so the default is vector-only until
     # weighted RRF / query-type gating land.
-    hybrid_search: bool = False
+    hybrid_search: bool = True
     # RRF smoothing constant: a chunk's fused score is the sum of
     # 1 / (rrf_k + rank) across the vector and keyword ranked lists.
     rrf_k: int = 60

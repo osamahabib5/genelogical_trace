@@ -94,6 +94,7 @@ genealogy_traceline/
 ├── sources/                    # Sample documents
 ├── uploads/                    # Uploaded documents (created at runtime)
 ├── rag_evaluation.py           # RAG evaluation pipeline (SOFAFEA eval set)
+├── agent_evaluation.py          # LangGraph agent metrics and trace evaluator
 └── test_embedding_batches_size.py  # Embedding batch-size benchmark
 ```
 
@@ -109,6 +110,7 @@ cd genealogy_traceline
 python -m venv venv
 
 # Activate it
+source venv/Scripts/activate #bash
 venv/Scripts/activate        # Windows
 source venv/bin/activate     # macOS / Linux
 
@@ -235,6 +237,8 @@ print(response.choices[0].message.content)
 ```
 
 The backend classifies each question and picks the DeepSeek reasoning effort automatically: `low` for simple factoid questions ("who is…", "when did…"), `high` for comparisons, and `max` for multi-step research questions ("search", "connect", "between … and"). Unmatched questions default to `low` for speed and lower cost. Thinking mode stays enabled; the rules live in `rule_based_classify()` in `llm_service.py`.
+
+The LangGraph research workflow also classifies the **retrieval approach**. Simple entity/fact questions (for example, "What is F. Adam's mother's name?") use a keyword lookup: the classifier extracts the named entity, searches matching document text and person records, and falls back to vector similarity where needed. Comparison, relationship, and multi-step questions use similarity retrieval so related evidence is not excluded by exact keyword filtering. If `HYBRID_SEARCH=true`, the similarity route uses the existing vector + full-text RRF path; otherwise it uses vector search. The choice and extracted keyword are stored in workflow state and logged with retrieval calls. This routing is implemented by `classify_retrieval_approach()` and `extract_keyword_target()` in `llm_service.py`, then applied by `node_retrieve()` in `agent_orchestration.py`.
 
 ### Groq (secondary)
 
@@ -452,8 +456,8 @@ The optional `/api/queries/research` endpoint runs a stateful, multi-step resear
 classify → retrieve → generate → verify → approve
 ```
 
-- **classify** — picks the DeepSeek reasoning effort via the existing rule-based classifier (defaults to `high`).
-- **retrieve** — embeds the query and searches document chunks + person records.
+- **classify** — picks the DeepSeek reasoning effort (defaults to `high`) and retrieval approach (`keyword` for simple entity/fact lookups, `similarity` for multi-hop/comparison questions).
+- **retrieve** — embeds the query and follows the selected route: keyword lookup searches matching document text and person names with vector fallback; similarity uses vector search, or hybrid vector + full-text RRF when `HYBRID_SEARCH=true`.
 - **generate** — drafts the answer and enforces a cumulative token budget.
 - **verify** — a second LLM pass checks every footnote citation against the retrieved context.
 - **approve** — human-in-the-loop gate; rejected drafts loop back to `generate`.
@@ -466,6 +470,22 @@ REQUIRE_HUMAN_APPROVAL=false       # true = pause for approval before returning
 ```
 
 Runs are checkpointed and keyed by `thread_id`; when approval is enabled, a paused run resumes via `POST /api/queries/research/{thread_id}/approve` with `decision=approve|revise`. If the agent errors, the endpoint falls back to the direct RAG path so callers always get an answer. Every agent run is logged to `rag_summary.json` with per-node timings and tool calls, just like `/ask`.
+
+### Agent evaluation
+
+Run the LangGraph research workflow against the gold answers with:
+
+```bash
+python agent_evaluation.py --limit 3
+python agent_evaluation.py --questions Q1,Q8,Q22 --repeats 3 --tag baseline
+python agent_evaluation.py --skip-judge  # workflow/tool metrics only; no evaluator LLM call
+```
+
+Results append to `app/backend/agent_evaluation_results.jsonl`. The harness measures workflow task completion, gold-answer goal completion and answer score, expected trajectory/path validity, step efficiency, expected service-call selection and parameter accuracy, tool-use rate, redundant retrieval/embedding calls, answer/evidence coherence, unsupported-claim rate, latency, token use, and estimated agent/judge cost. Repeated runs use pairwise token-set Jaccard as a lightweight self-consistency proxy. The LLM judge evaluates only the final answer against gold answers and retrieved evidence; the system does not collect or score private chain-of-thought. Provider failures returned by `llm_service` as text are marked as failed calls and unsuccessful tasks.
+
+**Observed runs (2026-10-12):** the initial and corrected three-question runs averaged 21.22 and 21.54 seconds; the nine-attempt Q1/Q8/Q22 repeat run averaged 21.68 seconds; the full 23-question run averaged 20.83 seconds. In the full run, all 23 traces followed the expected path (trajectory accuracy/path validity/step efficiency: 1.00); expected service selection F1 was 1.00; tool-call accuracy and tool-use rate were 0.60; redundant retrieval/embedding calls were 0. Retrieved chunks averaged 6.74 (range 3–8), and ancestry records averaged 1.48 (range 1–3). Of 115 service calls, 69 embedding/retrieval calls succeeded and all 46 generation/verifier calls failed with `Connection error`. Task completion was therefore 0%; answer-quality and judge metrics were unavailable, not zero, and cost was unknown because the provider returned no token usage. The connection-failure latency is not a successful-answer performance baseline. The LLM failure arrives as answer text, so the graph marked runs complete and auto-approved them instead of triggering the API's exception-based fallback; the evaluator detects and flags this condition. Run-level details are in `app/backend/agent_evaluation_results.jsonl`.
+
+The LangGraph research agent has a fixed graph, so generated-plan validity is reported as not applicable. Handoff accuracy, inter-agent consistency, and multi-agent coordination overhead are also not applicable because this workflow has no cooperating specialist agents. Human approval rates are only available for runs with resolved human decisions; automatic approval is not counted as human acceptance. For a full completion benchmark, keep `REQUIRE_HUMAN_APPROVAL=false`; with it enabled, runs pause and are recorded as pending approval.
 
 ## Troubleshooting
 

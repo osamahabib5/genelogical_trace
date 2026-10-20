@@ -55,6 +55,43 @@ def rule_based_classify(query: str) -> Optional[ReasoningMode]:
     return None
 
 
+def classify_retrieval_approach(query: str) -> str:
+    """Choose exact keyword lookup for simple entity facts, similarity otherwise.
+
+    Multi-step/comparison/relationship questions favor semantic retrieval so
+    relevant evidence across multiple chunks is not filtered out by exact text.
+    """
+    q = query.lower()
+    if re.search(
+        r"\b(compare|difference|vs|versus|contrast|connect|relationship|"
+        r"between|across|summari[sz]e|evidence|why|how did|how does)\b",
+        q,
+    ):
+        return "similarity"
+    if re.search(r"\b(who|what|when|where)\b", q) and re.search(
+        r"\b(name|mother|father|parent|son|daughter|wife|husband|born|died|birth|death)\b|['’]s\b",
+        q,
+    ):
+        return "keyword"
+    return "similarity"
+
+
+def extract_keyword_target(query: str) -> Optional[str]:
+    """Extract an entity phrase for exact lookup (e.g. ``F. Adam``)."""
+    patterns = (
+        r"([A-Z][\w.-]*(?:\s+[A-Z][\w.-]*)*)\s*['’]s\b",
+        r"\b(?:who\s+is|who\s+was|what\s+is|where\s+was|when\s+did)\s+"
+        r"(?:the\s+)?([A-Z][\w.-]*(?:\s+[A-Z][\w.-]*)*)(?=\s+(?:'s|’s)\b|[?.,]|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, query)
+        if match:
+            target = match.group(1).strip()
+            if target:
+                return target
+    return None
+
+
 class LLMService:
     def __init__(self):
         self.provider = settings.llm_provider
@@ -111,8 +148,20 @@ class LLMService:
             else:
                 return self._call_ollama(system_prompt, user_message)
         except Exception as e:
-            logger.error(f"Error generating response: {e}")
-            return f"Error generating response: {str(e)}", {}
+            # Preserve nested transport errors (for example, DNS failures or
+            # connection refusals wrapped by the SDK) so evaluation logs can
+            # identify the underlying cause instead of only "Connection error."
+            details = []
+            current = e
+            seen = set()
+            while current is not None and id(current) not in seen:
+                seen.add(id(current))
+                message = str(current).strip() or repr(current)
+                details.append(f"{type(current).__name__}: {message}")
+                current = current.__cause__ or current.__context__
+            detail_text = " <- ".join(details)
+            logger.exception("Error generating response: %s", detail_text)
+            return f"Error generating response: {detail_text}", {}
 
     def get_active_model_name(self) -> str:
         """Name of the chat model currently in use (for pricing lookup)."""
